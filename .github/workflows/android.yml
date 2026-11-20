@@ -41,4 +41,6 @@ jobs:
           arch: x86_64
           target: google_apis
           disable-animations: true
-          script: ./gradlew --no-daemon :app:connectedDebugAndroidTest -Pandroid.testInstrumentationRunnerArguments.openjdk=17
+          script: |
+            ./gradlew --no-daemon :app:connectedDebugAndroidTest -Pandroid.testInstrumentationRunnerArguments.openjdk=17 || (adb logcat -d -t 3000 | grep -E 'JADX|Jadx|openjdk|libjvm|AndroidRuntime|FATAL|Fatal signal' || true; exit 1)
+            ./gradlew --no-daemon :app:connectedDebugAndroidTest -Pandroid.testInstrumentationRunnerArguments.openjdk=21 || (adb logcat -d -t 3000 | grep -E 'JADX|Jadx|openjdk|libjvm|AndroidRuntime|FATAL|Fatal signal' || true; exit 1)

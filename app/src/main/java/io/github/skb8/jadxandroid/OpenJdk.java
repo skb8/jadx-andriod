@@ -10,6 +10,8 @@ import android.os.IBinder;
 import android.os.Message;
 import android.os.Messenger;
 import android.os.RemoteException;
+import android.system.Os;
+import android.system.OsConstants;
 
 import org.apache.commons.compress.archivers.tar.TarArchiveInputStream;
 import org.tukaani.xz.XZInputStream;
@@ -50,13 +52,15 @@ final class OpenJdk {
     }
 
     boolean supported() {
-        return switch (Build.SUPPORTED_ABIS[0]) {
-            case "arm64-v8a", "x86_64" -> true;
-            default -> false;
-        };
+        String abi = Build.SUPPORTED_ABIS[0];
+        return ("arm64-v8a".equals(abi) || "x86_64".equals(abi))
+                && Os.sysconf(OsConstants._SC_PAGESIZE) == 4096;
     }
 
     void install(int version) throws Exception {
+        if (!supported()) {
+            throw new IOException("Сборка OpenJDK требует страницы памяти 4 КБ");
+        }
         if (installed(version)) {
             return;
         }

@@ -246,7 +246,7 @@ public final class MainActivity extends Activity {
                 new Entry("JSON и ресурсы (ZIP)", () -> exportAs("json")),
                 new Entry("Проект Gradle (ZIP)", () -> exportAs("gradle"))));
         int version = selectedJava();
-        if (version != 0 && openJdk.installed(version)) {
+        if (version != 0 && openJdk.supported() && openJdk.installed(version)) {
             formats.add(new Entry("Java и ресурсы через OpenJDK " + version + " (ZIP)",
                     () -> new AlertDialog.Builder(this).setTitle("Экспорт через OpenJDK " + version)
                             .setMessage("JADX CLI использует исходные файлы и настройки декомпиляции проекта. Для псевдонимов, комментариев и DEX-плагинов используйте обычный экспорт.")
@@ -495,6 +495,12 @@ public final class MainActivity extends Activity {
                     }
                 }));
             }
+        }
+        if (!openJdk.supported()) {
+            runtimes.add(new Entry("Совместимость OpenJDK", () -> new AlertDialog.Builder(this)
+                    .setTitle("OpenJDK 17 и 21")
+                    .setMessage("Эти сборки OpenJDK требуют размер страницы памяти 4 КБ.")
+                    .setPositiveButton("Закрыть", null).show()));
         }
         choose("Java для экспорта", runtimes);
     }
