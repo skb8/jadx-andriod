@@ -3,12 +3,20 @@ package io.github.skb8.jadxandroid;
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertNotNull;
 import static org.junit.Assert.assertTrue;
+import static org.junit.Assert.fail;
 
 import android.content.ContentValues;
 import android.content.Context;
 import android.net.Uri;
+import android.os.SystemClock;
 import android.provider.MediaStore;
+import android.text.TextUtils;
+import android.view.View;
+import android.view.ViewGroup;
+import android.widget.ListView;
+import android.widget.TextView;
 
+import androidx.test.core.app.ActivityScenario;
 import androidx.test.ext.junit.runners.AndroidJUnit4;
 import androidx.test.platform.app.InstrumentationRegistry;
 
@@ -18,6 +26,8 @@ import org.junit.runner.RunWith;
 import java.nio.charset.StandardCharsets;
 import java.util.List;
 import java.util.Objects;
+import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.function.Predicate;
 import java.util.zip.ZipInputStream;
 
 import jadx.api.data.impl.JadxNodeRef;
@@ -83,6 +93,84 @@ public final class JadxSmokeTest {
             context.getContentResolver().delete(input, null, null);
             context.getContentResolver().delete(output, null, null);
         }
+    }
+
+    @Test
+    public void returnsToTheOpenPackageAfterReadingCodeAndSwitchingSections() throws Exception {
+        Context context = InstrumentationRegistry.getInstrumentation().getTargetContext();
+        Uri input = document(context, "Navigation.smali");
+        var preferences = context.getSharedPreferences("MainActivity", Context.MODE_PRIVATE);
+        String previous = preferences.getString("lastProject", null);
+        try {
+            try (var stream = Objects.requireNonNull(context.getContentResolver().openOutputStream(input))) {
+                stream.write(SMALI.getBytes(StandardCharsets.UTF_8));
+            }
+            preferences.edit().putString("lastProject", new Project(List.of(input)).serialize()).commit();
+            try (var scenario = ActivityScenario.launch(MainActivity.class)) {
+                visitView(scenario, "sample/", view -> hasLabel(view, "sample/"), true);
+                visitView(scenario, "Smoke", view -> hasLabel(view, "Smoke"), true);
+                visitView(scenario, "sample.Smoke", view -> hasLabel(view, "sample.Smoke"), false);
+                visitView(scenario, "Вернуться к списку",
+                        view -> TextUtils.equals("Вернуться к списку", view.getContentDescription()), true);
+                visitView(scenario, "класс Smoke в списке",
+                        view -> view.getParent() instanceof ListView && hasLabel(view, "Smoke"), false);
+                visitView(scenario, "Ресурсы", view -> hasLabel(view, "Ресурсы"), true);
+                visitView(scenario, "Классы", view -> hasLabel(view, "Классы"), true);
+                visitView(scenario, "класс Smoke в списке",
+                        view -> view.getParent() instanceof ListView && hasLabel(view, "Smoke"), false);
+            }
+        } finally {
+            preferences.edit().putString("lastProject", previous).commit();
+            context.getContentResolver().delete(input, null, null);
+        }
+    }
+
+    private static void visitView(ActivityScenario<MainActivity> scenario, String label,
+                                  Predicate<View> selector, boolean click) {
+        long deadline = SystemClock.uptimeMillis() + 10_000;
+        AtomicBoolean found = new AtomicBoolean();
+        do {
+            scenario.onActivity(activity -> {
+                View view = find(activity.getWindow().getDecorView(), selector);
+                if (view == null) {
+                    return;
+                }
+                found.set(true);
+                if (click && view.getParent() instanceof ListView list) {
+                    int position = list.getPositionForView(view);
+                    assertTrue(list.performItemClick(view, position, list.getItemIdAtPosition(position)));
+                } else if (click) {
+                    assertTrue(view.performClick());
+                }
+            });
+            if (found.get()) {
+                return;
+            }
+            SystemClock.sleep(50);
+        } while (SystemClock.uptimeMillis() < deadline);
+        fail("Не найден элемент " + label);
+    }
+
+    private static boolean hasLabel(View view, String label) {
+        return view instanceof TextView text && label.contentEquals(text.getText());
+    }
+
+    private static View find(View view, Predicate<View> selector) {
+        if (!view.isShown()) {
+            return null;
+        }
+        if (selector.test(view)) {
+            return view;
+        }
+        if (view instanceof ViewGroup group) {
+            for (int i = 0; i < group.getChildCount(); i++) {
+                View match = find(group.getChildAt(i), selector);
+                if (match != null) {
+                    return match;
+                }
+            }
+        }
+        return null;
     }
 
     private Uri document(Context context, String name) {

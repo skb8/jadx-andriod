@@ -9,11 +9,13 @@ import android.content.res.ColorStateList;
 import android.graphics.Color;
 import android.graphics.Typeface;
 import android.graphics.drawable.GradientDrawable;
+import android.graphics.drawable.RippleDrawable;
 import android.net.Uri;
 import android.os.Bundle;
 import android.text.InputType;
 import android.text.Spannable;
 import android.text.SpannableString;
+import android.text.TextUtils;
 import android.text.style.ForegroundColorSpan;
 import android.view.Gravity;
 import android.view.View;
@@ -36,6 +38,8 @@ import android.widget.Toast;
 import java.io.IOException;
 import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
+import java.util.EnumMap;
+import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
@@ -45,6 +49,7 @@ import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.function.Consumer;
 import java.util.regex.Pattern;
+import java.util.regex.PatternSyntaxException;
 
 import jadx.api.DecompilationMode;
 import jadx.api.JavaClass;
@@ -79,10 +84,13 @@ public final class MainActivity extends Activity {
 
     private final ExecutorService worker = Executors.newSingleThreadExecutor();
     private final List<DocumentTab> documents = new ArrayList<>();
+    private final Map<Screen, BrowseState> browsing = new EnumMap<>(Screen.class);
     private LinearLayout root;
     private LinearLayout body;
     private LinearLayout navigation;
     private HorizontalScrollView tabs;
+    private TextView projectTitle;
+    private Button openFiles;
     private TextView status;
     private ProgressBar progress;
     private PluginStore plugins;
@@ -90,17 +98,29 @@ public final class MainActivity extends Activity {
     private boolean busy;
     private boolean destroyed;
     private Screen screen = Screen.CLASSES;
-    private String path = "";
+    private Screen lastTree = Screen.CLASSES;
+    private Screen returnFromCode = Screen.CLASSES;
     private DocumentTab current;
     private TextView codeView;
     private ScrollView codeScroll;
+    private HorizontalScrollView codeHorizontal;
+    private ListView browserList;
     private List<Session.Hit> lastResults = List.of();
     private String searchTitle = "";
+    private SearchOptions lastSearch = new SearchOptions("", true, false, false);
     private String pendingExportMode = "";
     private DocumentTab pendingFile;
     private int generation;
 
     private enum Screen { CLASSES, RESOURCES, RESULTS, CODE }
+
+    private static final class BrowseState {
+        String path = "";
+        final Map<String, ListPosition> positions = new HashMap<>();
+    }
+
+    private record ListPosition(int row, int top) {}
+    private record SearchOptions(String query, boolean source, boolean regex, boolean exact) {}
 
     private static final class DocumentTab {
         final Object source;
@@ -109,6 +129,7 @@ public final class MainActivity extends Activity {
         Session.Preview preview;
         boolean smali;
         int scroll;
+        int scrollX;
 
         DocumentTab(Object source, String title) {
             this.source = source;
@@ -140,16 +161,25 @@ public final class MainActivity extends Activity {
         LinearLayout top = row();
         top.setPadding(dp(18), dp(8), dp(10), dp(8));
         top.setBackgroundColor(PANEL);
-        TextView title = text("JADX Android", 22, INK);
+        LinearLayout heading = column();
+        heading.setGravity(Gravity.CENTER_VERTICAL);
+        TextView title = text("JADX Android", 20, INK);
         title.setTypeface(Typeface.DEFAULT, Typeface.BOLD);
-        top.addView(title, new LinearLayout.LayoutParams(0, dp(48), 1));
-        top.addView(button("Открыть", () -> pick(OPEN_FILES, true)));
-        top.addView(button("⋮", this::menu));
-        top.getChildAt(top.getChildCount() - 1).setContentDescription("Меню проекта");
+        truncate(title, TextUtils.TruncateAt.END);
+        heading.addView(title);
+        projectTitle = text("", 12, MUTED);
+        truncate(projectTitle, TextUtils.TruncateAt.MIDDLE);
+        heading.addView(projectTitle);
+        top.addView(heading, new LinearLayout.LayoutParams(0, -2, 1));
+        openFiles = button("Открыть", () -> pick(OPEN_FILES, true));
+        top.addView(openFiles);
+        Button menu = button("⋮", this::menu);
+        menu.setContentDescription("Меню проекта");
+        top.addView(menu);
         root.addView(top);
         navigation = row();
         navigation.setPadding(dp(8), dp(4), dp(8), dp(4));
-        root.addView(navigation);
+        root.addView(horizontal(navigation));
         tabs = new HorizontalScrollView(this);
         tabs.setHorizontalScrollBarEnabled(false);
         root.addView(tabs);
@@ -160,8 +190,9 @@ public final class MainActivity extends Activity {
         body = column();
         root.addView(body, new LinearLayout.LayoutParams(-1, 0, 1));
         status = text("JADX " + BuildConfig.JADX_VERSION, 12, MUTED);
-        status.setPadding(dp(16), 0, dp(16), 0);
-        root.addView(status, new LinearLayout.LayoutParams(-1, dp(32)));
+        status.setPadding(dp(16), dp(6), dp(16), dp(6));
+        status.setAccessibilityLiveRegion(View.ACCESSIBILITY_LIVE_REGION_POLITE);
+        root.addView(status, new LinearLayout.LayoutParams(-1, -2));
         render();
 
         if (state != null) {
@@ -186,12 +217,14 @@ public final class MainActivity extends Activity {
     private void goBack() {
         if (busy) {
             toast("Операция ещё выполняется");
-        } else if (screen == Screen.CODE || screen == Screen.RESULTS) {
-            show(Screen.CLASSES);
-        } else if (!path.isEmpty()) {
-            int previous = path.lastIndexOf('/', path.length() - 2);
-            path = path.substring(0, previous + 1);
-            render();
+        } else if (screen == Screen.CODE) {
+            show(returnFromCode);
+        } else if (screen == Screen.RESULTS) {
+            show(lastTree);
+        } else if (!browse().path.isEmpty()) {
+            String path = browse().path;
+            int parent = path.lastIndexOf('/', path.length() - 2);
+            navigate(path.substring(0, parent + 1));
         } else {
             finish();
         }
@@ -229,7 +262,6 @@ public final class MainActivity extends Activity {
             options.add(new Entry("Сохранить проект", () -> create(SAVE_PROJECT, "project.jadx-android.json", "application/json")));
             options.add(new Entry("Экспорт", this::exportMenu));
             options.add(new Entry("Настройки декомпиляции", this::settings));
-            options.add(new Entry("Параметры плагинов", this::pluginOptions));
             options.add(new Entry("Диагностика проекта", this::diagnostics));
             options.add(new Entry("Закрыть проект", this::close));
         }
@@ -399,9 +431,12 @@ public final class MainActivity extends Activity {
     private void resetViews() {
         documents.clear();
         current = null;
+        browserList = null;
+        browsing.clear();
+        lastTree = Screen.CLASSES;
+        returnFromCode = Screen.CLASSES;
         lastResults = List.of();
         searchTitle = "";
-        path = "";
     }
 
     private void persist() {
@@ -460,13 +495,37 @@ public final class MainActivity extends Activity {
     private void pluginMenu() {
         task("Чтение списка плагинов…", plugins::list, installed -> {
             List<Entry> options = new ArrayList<>();
-            options.add(new Entry("Импорт APK/JAR/ZIP с DEX", () -> pick(INSTALL_PLUGIN, false)));
+            options.add(new Entry("Импортировать DEX-плагин", () -> pick(INSTALL_PLUGIN, false)));
+            options.add(new Entry("Встроенные модули", this::builtInPlugins));
+            if (session != null) {
+                options.add(new Entry("Настройки активных плагинов", this::pluginOptions));
+            }
+            options.add(new Entry("Формат плагина", () -> new AlertDialog.Builder(this)
+                    .setTitle("Формат DEX-плагина")
+                    .setMessage("Импортируйте ZIP, JAR или APK с classes.dex и jadx-android.properties в корне. "
+                            + "Поддерживается API JADX " + BuildConfig.JADX_VERSION + ". "
+                            + "Плагин с обычными .class нужно предварительно преобразовать в DEX.")
+                    .setNegativeButton("Назад", (dialog, which) -> pluginMenu())
+                    .setPositiveButton("Импортировать", (dialog, which) -> pick(INSTALL_PLUGIN, false)).show()));
             for (PluginStore.Plugin plugin : installed) {
                 options.add(new Entry(plugin.id() + (plugins.enabled(plugin) ? " · включён" : " · выключен"),
                         () -> pluginActions(plugin)));
             }
             choose("Плагины", options);
         });
+    }
+
+    private void builtInPlugins() {
+        List<Entry> entries = new ArrayList<>();
+        for (var plugin : PluginStore.builtIns()) {
+            var info = plugin.getPluginInfo();
+            entries.add(new Entry(info.getName(), () -> new AlertDialog.Builder(this)
+                    .setTitle(info.getName())
+                    .setMessage(info.getDescription() + "\n\n" + info.getPluginId())
+                    .setNegativeButton("К модулям", (dialog, which) -> builtInPlugins())
+                    .setPositiveButton("Закрыть", null).show()));
+        }
+        choose("Встроенные модули", entries);
     }
 
     private void pluginActions(PluginStore.Plugin plugin) {
@@ -538,11 +597,32 @@ public final class MainActivity extends Activity {
     }
 
     private void show(Screen screen) {
+        rememberViewport();
+        this.screen = screen;
+        if (screen == Screen.CLASSES || screen == Screen.RESOURCES) {
+            lastTree = screen;
+        }
+        render();
+    }
+
+    private BrowseState browse() {
+        return browsing.computeIfAbsent(screen, unused -> new BrowseState());
+    }
+
+    private void rememberViewport() {
         if (this.screen == Screen.CODE && current != null && codeScroll != null) {
             current.scroll = codeScroll.getScrollY();
+            current.scrollX = codeHorizontal == null ? 0 : codeHorizontal.getScrollX();
+        } else if (browserList != null && browserList.getChildCount() > 0) {
+            BrowseState state = browse();
+            state.positions.put(state.path, new ListPosition(browserList.getFirstVisiblePosition(),
+                    browserList.getChildAt(0).getTop()));
         }
-        this.screen = screen;
-        path = "";
+    }
+
+    private void navigate(String path) {
+        rememberViewport();
+        browse().path = path;
         render();
     }
 
@@ -553,6 +633,13 @@ public final class MainActivity extends Activity {
         tabs.removeAllViews();
         codeView = null;
         codeScroll = null;
+        codeHorizontal = null;
+        browserList = null;
+        projectTitle.setVisibility(session == null ? View.GONE : View.VISIBLE);
+        openFiles.setVisibility(session == null ? View.GONE : View.VISIBLE);
+        if (!busy) {
+            showProjectStatus();
+        }
         if (session == null) {
             LinearLayout empty = column();
             empty.setGravity(Gravity.CENTER);
@@ -564,13 +651,17 @@ public final class MainActivity extends Activity {
             description.setGravity(Gravity.CENTER);
             description.setPadding(0, dp(9), 0, dp(20));
             empty.addView(description, new LinearLayout.LayoutParams(-1, -2));
-            empty.addView(button("Выбрать файлы", () -> pick(OPEN_FILES, true)));
+            Button select = button("Выбрать файлы", () -> pick(OPEN_FILES, true));
+            select.setTextColor(BACKGROUND);
+            select.setBackground(new RippleDrawable(ColorStateList.valueOf(0x33000000), pill(ACCENT, dp(12)), null));
+            select.setPadding(dp(24), 0, dp(24), 0);
+            empty.addView(select);
+            empty.addView(button("Открыть проект", () -> pick(OPEN_PROJECT, false)));
             body.addView(empty, new LinearLayout.LayoutParams(-1, -1));
-            if (!busy) {
-                status.setText("JADX " + BuildConfig.JADX_VERSION + " · Android");
-            }
             return;
         }
+        int extraFiles = session.names.size() - 1;
+        projectTitle.setText(session.names.get(0) + (extraFiles > 0 ? "  +" + extraFiles : ""));
         nav("Классы", Screen.CLASSES);
         nav("Ресурсы", Screen.RESOURCES);
         navigation.addView(button("Поиск", this::search));
@@ -580,9 +671,16 @@ public final class MainActivity extends Activity {
         if (!documents.isEmpty()) {
             LinearLayout strip = row();
             strip.setPadding(dp(8), 0, dp(8), 0);
+            Button active = null;
             for (DocumentTab tab : documents) {
                 Button item = button(tab.title, () -> switchTab(tab, -1));
-                item.setTextColor(screen == Screen.CODE && tab == current ? ACCENT : MUTED);
+                truncate(item, TextUtils.TruncateAt.MIDDLE);
+                item.setMaxWidth(dp(190));
+                boolean selected = screen == Screen.CODE && tab == current;
+                styleChip(item, selected);
+                if (selected) {
+                    active = item;
+                }
                 item.setOnLongClickListener(view -> {
                     if (!busy) {
                         closeTab(tab);
@@ -592,10 +690,15 @@ public final class MainActivity extends Activity {
                 strip.addView(item);
             }
             tabs.addView(strip);
-        }
-        if (!busy) {
-            status.setText(session.classes.size() + " классов  ·  " + session.resources.size()
-                    + " ресурсов  ·  " + String.join(", ", session.names));
+            if (active != null) {
+                Button visibleTab = active;
+                tabs.post(() -> {
+                    if (strip.getParent() == tabs) {
+                        int centered = visibleTab.getLeft() - (tabs.getWidth() - visibleTab.getWidth()) / 2;
+                        tabs.scrollTo(Math.max(0, centered), 0);
+                    }
+                });
+            }
         }
         switch (screen) {
             case CLASSES -> renderTree(true);
@@ -606,35 +709,30 @@ public final class MainActivity extends Activity {
     }
 
     private void nav(String label, Screen target) {
-        Button item = button(label, () -> show(target));
-        if (screen == target) {
-            item.setTextColor(ACCENT);
-            item.setBackground(pill(PANEL, dp(14)));
-        }
+        Button item = button(label, () -> {
+            if (screen != target) {
+                show(target);
+            }
+        });
+        styleChip(item, screen == target);
         navigation.addView(item);
     }
 
     private void renderTree(boolean classes) {
-        LinearLayout location = row();
-        if (!path.isEmpty()) {
-            location.addView(button("‹", this::goBack));
-        }
-        TextView title = text(path.isEmpty() ? (classes ? "Пакеты и классы" : "Файлы и ресурсы") : path, 15, MUTED);
-        title.setPadding(dp(16), 0, dp(12), 0);
-        location.addView(title, new LinearLayout.LayoutParams(0, dp(40), 1));
-        body.addView(location);
+        String path = browse().path;
+        breadcrumbs(classes ? "Пакеты и классы" : "Файлы и ресурсы", path);
         Map<String, Entry> folders = new TreeMap<>();
         List<Entry> contents = new ArrayList<>();
         if (classes) {
             for (JavaClass cls : session.classes) {
                 String pkg = cls.getPackage().replace('.', '/');
                 String key = (pkg.isEmpty() ? "" : pkg + "/") + cls.getName();
-                treeEntry(folders, contents, key, () -> openClass(cls, 0));
+                treeEntry(folders, contents, path, key, () -> openClass(cls, 0));
             }
         } else {
             for (ResourceFile file : session.resources) {
                 String key = file.getDeobfName();
-                treeEntry(folders, contents, key, () -> openResource(file, key));
+                treeEntry(folders, contents, path, key, () -> openResource(file, key));
             }
         }
         List<Entry> entries = new ArrayList<>(folders.values());
@@ -642,7 +740,44 @@ public final class MainActivity extends Activity {
         list(entries, classes ? "Классов в этом разделе нет" : "Ресурсов в этом разделе нет");
     }
 
-    private void treeEntry(Map<String, Entry> folders, List<Entry> contents, String key, Runnable open) {
+    private void breadcrumbs(String rootName, String path) {
+        LinearLayout bar = row();
+        LinearLayout location = row();
+        location.setPadding(dp(6), 0, dp(10), 0);
+        if (!path.isEmpty()) {
+            Button up = button("‹", this::goBack);
+            up.setContentDescription("На уровень выше");
+            bar.addView(up);
+            location.addView(button(rootName, () -> navigate("")));
+        } else {
+            TextView title = text(rootName, 15, MUTED);
+            title.setPadding(dp(6), 0, dp(6), 0);
+            location.addView(title, new LinearLayout.LayoutParams(-2, dp(44)));
+        }
+        int start = 0;
+        while (start < path.length()) {
+            int end = path.indexOf('/', start) + 1;
+            String segment = path.substring(start, end - 1);
+            String target = path.substring(0, end);
+            TextView divider = text("/", 14, MUTED);
+            divider.setImportantForAccessibility(View.IMPORTANT_FOR_ACCESSIBILITY_NO);
+            location.addView(divider);
+            if (end == path.length()) {
+                TextView currentFolder = text(segment, 15, ACCENT);
+                currentFolder.setPadding(dp(10), 0, dp(10), 0);
+                location.addView(currentFolder, new LinearLayout.LayoutParams(-2, dp(48)));
+            } else {
+                location.addView(button(segment, () -> navigate(target)));
+            }
+            start = end;
+        }
+        HorizontalScrollView trail = horizontal(location);
+        bar.addView(trail, new LinearLayout.LayoutParams(0, -2, 1));
+        body.addView(bar);
+        trail.post(() -> trail.scrollTo(location.getWidth(), 0));
+    }
+
+    private void treeEntry(Map<String, Entry> folders, List<Entry> contents, String path, String key, Runnable open) {
         if (!key.startsWith(path)) {
             return;
         }
@@ -651,10 +786,7 @@ public final class MainActivity extends Activity {
         if (delimiter >= 0) {
             String folder = relative.substring(0, delimiter + 1);
             String next = path + folder;
-            folders.putIfAbsent(folder, new Entry(folder, () -> {
-                path = next;
-                render();
-            }));
+            folders.putIfAbsent(folder, new Entry(folder, () -> navigate(next)));
         } else if (!relative.isEmpty()) {
             contents.add(new Entry(relative, open));
         }
@@ -665,10 +797,14 @@ public final class MainActivity extends Activity {
         EditText query = editText("Имя или фрагмент кода");
         query.setSingleLine();
         query.setImeOptions(EditorInfo.IME_ACTION_SEARCH);
+        query.setText(lastSearch.query());
+        query.selectAll();
         CheckBox source = check("Искать в коде и именах методов");
-        source.setChecked(true);
+        source.setChecked(lastSearch.source());
         CheckBox regex = check("Регулярное выражение");
+        regex.setChecked(lastSearch.regex());
         CheckBox exact = check("Учитывать регистр");
+        exact.setChecked(lastSearch.exact());
         form.addView(query);
         form.addView(source);
         form.addView(regex);
@@ -681,10 +817,20 @@ public final class MainActivity extends Activity {
                 query.setError("Введите запрос");
                 return;
             }
-            dialog.dismiss();
             boolean byRegex = regex.isChecked();
             boolean byCase = exact.isChecked();
             boolean inSource = source.isChecked();
+            if (byRegex) {
+                try {
+                    Pattern.compile(text);
+                } catch (PatternSyntaxException error) {
+                    query.setError("Неверное регулярное выражение");
+                    query.requestFocus();
+                    return;
+                }
+            }
+            lastSearch = new SearchOptions(text, inSource, byRegex, byCase);
+            dialog.dismiss();
             Session selected = session;
             task("Поиск по проекту…", () -> selected.search(text, byRegex, byCase, inSource),
                     hits -> showHits("Поиск · " + text, hits));
@@ -698,12 +844,20 @@ public final class MainActivity extends Activity {
             }
             return false;
         });
+        query.requestFocus();
+        Objects.requireNonNull(dialog.getWindow()).setSoftInputMode(
+                WindowManager.LayoutParams.SOFT_INPUT_STATE_ALWAYS_VISIBLE
+                        | WindowManager.LayoutParams.SOFT_INPUT_ADJUST_RESIZE);
         dialog.show();
     }
 
     private void showHits(String title, List<Session.Hit> hits) {
         searchTitle = title;
         lastResults = hits;
+        browsing.remove(Screen.RESULTS);
+        if (screen == Screen.RESULTS) {
+            browserList = null;
+        }
         show(Screen.RESULTS);
     }
 
@@ -767,8 +921,9 @@ public final class MainActivity extends Activity {
     }
 
     private void switchTab(DocumentTab tab, int position) {
-        if (screen == Screen.CODE && current != null && codeScroll != null) {
-            current.scroll = codeScroll.getScrollY();
+        rememberViewport();
+        if (screen != Screen.CODE) {
+            returnFromCode = screen;
         }
         if (!documents.contains(tab)) {
             if (documents.size() >= 16) {
@@ -786,17 +941,20 @@ public final class MainActivity extends Activity {
     }
 
     private void closeTab(DocumentTab tab) {
+        rememberViewport();
         documents.remove(tab);
         if (current == tab) {
             current = null;
-            if (documents.isEmpty()) {
-                show(Screen.CLASSES);
-            } else {
-                switchTab(documents.get(documents.size() - 1), -1);
+            if (screen == Screen.CODE) {
+                if (documents.isEmpty()) {
+                    show(returnFromCode);
+                } else {
+                    switchTab(documents.get(documents.size() - 1), -1);
+                }
+                return;
             }
-        } else {
-            render();
         }
+        render();
     }
 
     private void renderCode() {
@@ -804,15 +962,40 @@ public final class MainActivity extends Activity {
             return;
         }
         DocumentTab tab = current;
-        HorizontalScrollView actions = new HorizontalScrollView(this);
-        actions.setHorizontalScrollBarEnabled(false);
+        LinearLayout header = row();
+        header.setBackgroundColor(PANEL);
+        Button back = button("‹", this::goBack);
+        back.setContentDescription("Вернуться к списку");
+        header.addView(back);
+        String name = tab.source instanceof JavaClass cls ? cls.getFullName() : tab.preview.resource().getName();
+        TextView title = text(name, 15, INK);
+        truncate(title, TextUtils.TruncateAt.MIDDLE);
+        header.addView(title, new LinearLayout.LayoutParams(0, dp(48), 1));
+        Button close = button("×", () -> closeTab(tab));
+        close.setContentDescription("Закрыть вкладку");
+        header.addView(close);
+        body.addView(header);
+
         LinearLayout links = row();
         links.setPadding(dp(8), 0, dp(8), 0);
         if (tab.source instanceof JavaClass cls) {
-            links.addView(button(tab.smali ? "Java" : "Smali", () -> loadClass(tab, !tab.smali, 0)));
+            Button java = button("Java", () -> {
+                if (tab.smali) {
+                    loadClass(tab, false, 0);
+                }
+            });
+            Button smali = button("Smali", () -> {
+                if (!tab.smali) {
+                    loadClass(tab, true, 0);
+                }
+            });
+            styleChip(java, !tab.smali);
+            styleChip(smali, tab.smali);
+            links.addView(java);
+            links.addView(smali);
             links.addView(button("Символы", () -> symbols(cls)));
             if (!tab.smali) {
-                links.addView(button("По позиции", () -> fromSelection(cls)));
+                links.addView(button("Выделенный символ", () -> fromSelection(cls)));
             }
         }
         if (tab.preview != null && !tab.preview.resource().getSubFiles().isEmpty()) {
@@ -842,14 +1025,15 @@ public final class MainActivity extends Activity {
                 create(SAVE_FILE, tab.title + extension, mime);
             }));
         }
-        links.addView(button("Закрыть", () -> closeTab(tab)));
-        actions.addView(links);
-        body.addView(actions);
+        if (links.getChildCount() > 0) {
+            body.addView(horizontal(links));
+        }
 
         ScrollView vertical = new ScrollView(this);
         codeScroll = vertical;
         vertical.setFillViewport(true);
         body.addView(vertical, new LinearLayout.LayoutParams(-1, 0, 1));
+        vertical.post(() -> vertical.scrollTo(0, tab.scroll));
         if (tab.preview != null && tab.preview.image() != null) {
             ImageView image = new ImageView(this);
             image.setImageBitmap(tab.preview.image());
@@ -860,6 +1044,7 @@ public final class MainActivity extends Activity {
             return;
         }
         HorizontalScrollView horizontal = new HorizontalScrollView(this);
+        codeHorizontal = horizontal;
         horizontal.setFillViewport(true);
         vertical.addView(horizontal, new ScrollView.LayoutParams(-1, -2));
         TextView code = text("", 13, INK);
@@ -870,7 +1055,7 @@ public final class MainActivity extends Activity {
         code.setText(highlight(tab.text));
         horizontal.addView(code, new HorizontalScrollView.LayoutParams(-2, -2));
         codeView = code;
-        vertical.post(() -> vertical.scrollTo(0, tab.scroll));
+        horizontal.post(() -> horizontal.scrollTo(tab.scrollX, 0));
     }
 
     private CharSequence highlight(String text) {
@@ -899,6 +1084,7 @@ public final class MainActivity extends Activity {
     private void scrollTo(int position) {
         TextView view = codeView;
         ScrollView scroll = codeScroll;
+        HorizontalScrollView horizontal = codeHorizontal;
         int expected = generation;
         if (view != null && scroll != null) {
             view.post(() -> {
@@ -906,6 +1092,10 @@ public final class MainActivity extends Activity {
                     int safe = Math.max(0, Math.min(position, view.length()));
                     int line = view.getLayout().getLineForOffset(safe);
                     scroll.scrollTo(0, view.getLayout().getLineTop(line));
+                    if (horizontal != null) {
+                        int x = Math.round(view.getLayout().getPrimaryHorizontal(safe));
+                        horizontal.scrollTo(Math.max(0, x - dp(24)), 0);
+                    }
                 }
             });
         }
@@ -1110,8 +1300,7 @@ public final class MainActivity extends Activity {
                 }
                 busy = false;
                 progress.setVisibility(View.GONE);
-                status.setText(session == null ? "JADX " + BuildConfig.JADX_VERSION :
-                        session.classes.size() + " классов  ·  " + session.resources.size() + " ресурсов");
+                showProjectStatus();
                 if (failure == null) {
                     deliver.accept(result);
                 } else {
@@ -1167,6 +1356,17 @@ public final class MainActivity extends Activity {
             }
         });
         body.addView(list, new LinearLayout.LayoutParams(-1, 0, 1));
+        browserList = list;
+        BrowseState state = browse();
+        ListPosition position = state.positions.get(state.path);
+        if (position != null) {
+            list.setSelectionFromTop(Math.min(position.row(), entries.size() - 1), position.top());
+        }
+    }
+
+    private void showProjectStatus() {
+        status.setText(session == null ? "JADX " + BuildConfig.JADX_VERSION
+                : "Классы " + session.classes.size() + "   ·   Ресурсы " + session.resources.size());
     }
 
     private LinearLayout form() {
@@ -1201,6 +1401,18 @@ public final class MainActivity extends Activity {
         return layout;
     }
 
+    private HorizontalScrollView horizontal(View child) {
+        HorizontalScrollView scroll = new HorizontalScrollView(this);
+        scroll.setHorizontalScrollBarEnabled(false);
+        scroll.addView(child);
+        return scroll;
+    }
+
+    private void truncate(TextView view, TextUtils.TruncateAt position) {
+        view.setSingleLine(true);
+        view.setEllipsize(position);
+    }
+
     private TextView text(String value, int size, int color) {
         TextView label = new TextView(this);
         label.setText(value);
@@ -1216,9 +1428,9 @@ public final class MainActivity extends Activity {
         button.setText(title);
         button.setTextColor(INK);
         button.setTextSize(14);
-        button.setMinWidth(dp(44));
+        button.setMinWidth(dp(48));
         button.setMinHeight(dp(48));
-        button.setMinimumWidth(dp(44));
+        button.setMinimumWidth(dp(48));
         button.setPadding(dp(10), 0, dp(10), 0);
         button.setOnClickListener(view -> {
             if (!busy) {
@@ -1226,6 +1438,14 @@ public final class MainActivity extends Activity {
             }
         });
         return button;
+    }
+
+    private void styleChip(Button button, boolean selected) {
+        button.setSelected(selected);
+        button.setTextColor(selected ? ACCENT : INK);
+        if (selected) {
+            button.setBackground(new RippleDrawable(ColorStateList.valueOf(0x338BD8BE), pill(PANEL, dp(12)), null));
+        }
     }
 
     private GradientDrawable pill(int color, int radius) {

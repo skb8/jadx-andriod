@@ -85,13 +85,16 @@ final class PluginStore {
         settings.edit().remove(plugin.id()).apply();
     }
 
+    static List<JadxPlugin> builtIns() {
+        return List.of(new DexInputPlugin(), new JavaInputPlugin(), new SmaliInputPlugin(), new AabInputPlugin(),
+                new ApksInputPlugin(), new ApkmInputPlugin(), new XApkInputPlugin(), new RenameMappingsPlugin());
+    }
+
     JadxBasePluginLoader loader() {
         return new JadxBasePluginLoader() {
             @Override
             public List<JadxPlugin> load() {
-                List<JadxPlugin> plugins = new ArrayList<>(List.of(new DexInputPlugin(), new JavaInputPlugin(),
-                        new SmaliInputPlugin(), new AabInputPlugin(), new ApksInputPlugin(),
-                        new ApkmInputPlugin(), new XApkInputPlugin(), new RenameMappingsPlugin()));
+                List<JadxPlugin> plugins = new ArrayList<>(builtIns());
                 try {
                     for (Plugin plugin : list()) {
                         if (!enabled(plugin)) {
@@ -128,10 +131,12 @@ final class PluginStore {
 
     private static Plugin inspect(Path archive) throws IOException {
         try (ZipFile zip = new ZipFile(archive.toFile())) {
+            if (zip.getEntry("classes.dex") == null) {
+                throw new IOException("В архиве нет classes.dex. JVM-плагин нужно преобразовать в DEX перед импортом.");
+            }
             var descriptor = zip.getEntry("jadx-android.properties");
-            if (descriptor == null || descriptor.getSize() <= 0 || descriptor.getSize() > 4096
-                    || zip.getEntry("classes.dex") == null) {
-                throw new IOException("Требуются classes.dex и jadx-android.properties");
+            if (descriptor == null || descriptor.getSize() <= 0 || descriptor.getSize() > 4096) {
+                throw new IOException("В корне архива нужен файл jadx-android.properties размером до 4 КБ.");
             }
             Properties properties = new Properties();
             try (var stream = zip.getInputStream(descriptor)) {
