@@ -95,7 +95,7 @@ final class Session implements AutoCloseable {
             engine = new JadxDecompiler(args);
             engine.getResourcesLoader().addResContainerFactory((resource, stream) ->
                     resource.getType() == ResourceType.IMG && resource.getDeobfName().endsWith(".9.png")
-                            ? ResContainer.resourceFileLink(resource) : null);
+                            ? AndroidNinePatch.decode(resource, stream) : null);
             engine.load();
             jadx = engine;
             classes = new ArrayList<>(jadx.getClasses());
@@ -258,6 +258,19 @@ final class Session implements AutoCloseable {
                 });
             }
         };
+    }
+
+    void saveResource(ResContainer resource, Uri destination) throws Exception {
+        try (var out = Objects.requireNonNull(context.getContentResolver().openOutputStream(destination, "wt"))) {
+            switch (resource.getDataType()) {
+                case TEXT, RES_TABLE -> out.write(resource.getText().getCodeStr().getBytes(StandardCharsets.UTF_8));
+                case DECODED_DATA -> out.write(resource.getDecodedData());
+                case RES_LINK -> ResourcesLoader.decodeStream(resource.getResLink(), (size, in) -> {
+                    Io.copy(in, out, MAX_INPUT);
+                    return null;
+                });
+            }
+        }
     }
 
     void export(Uri destination, boolean gradle, boolean json) throws Exception {

@@ -17,6 +17,30 @@ static std::string from_java(JNIEnv* env, jstring value) {
     return result;
 }
 
+static std::string describe_exception(JNIEnv* env, const std::string& operation) {
+    jthrowable exception = env->ExceptionOccurred();
+    if (exception == nullptr) {
+        return operation;
+    }
+    env->ExceptionClear();
+    jclass throwable = env->FindClass("java/lang/Throwable");
+    if (throwable == nullptr) {
+        env->ExceptionClear();
+        return operation;
+    }
+    jmethodID to_string = env->GetMethodID(throwable, "toString", "()Ljava/lang/String;");
+    if (to_string == nullptr) {
+        env->ExceptionClear();
+        return operation;
+    }
+    auto description = static_cast<jstring>(env->CallObjectMethod(exception, to_string));
+    if (description == nullptr || env->ExceptionCheck()) {
+        env->ExceptionClear();
+        return operation;
+    }
+    return operation + ": " + from_java(env, description);
+}
+
 static std::string execute(const std::string& home, const std::string& jar,
                            const std::string& work, const std::vector<std::string>& args) {
 #if defined(__aarch64__)
@@ -60,36 +84,47 @@ static std::string execute(const std::string& home, const std::string& jar,
         return "JNI_CreateJavaVM: " + std::to_string(result);
     }
 
-    jclass string_type = openjdk->FindClass("java/lang/String");
-    jclass cli = openjdk->FindClass("jadx/cli/JadxCLI");
-    if (string_type == nullptr || cli == nullptr) {
-        openjdk->ExceptionDescribe();
-        return "OpenJDK could not load JadxCLI";
-    }
-    jmethodID entry = openjdk->GetStaticMethodID(cli, "execute", "([Ljava/lang/String;)I");
-    if (entry == nullptr) {
-        openjdk->ExceptionDescribe();
-        return "JadxCLI.execute is unavailable";
-    }
     if (args.empty()) {
         jclass system = openjdk->FindClass("java/lang/System");
         if (system == nullptr) {
-            openjdk->ExceptionDescribe();
-            return "OpenJDK could not load System";
+            return describe_exception(openjdk, "OpenJDK could not load System");
         }
         jmethodID property = openjdk->GetStaticMethodID(system, "getProperty",
                 "(Ljava/lang/String;)Ljava/lang/String;");
         if (property == nullptr) {
-            openjdk->ExceptionDescribe();
-            return "OpenJDK could not read its installed version";
+            return describe_exception(openjdk, "OpenJDK could not read its installed version");
         }
         auto key = openjdk->NewStringUTF("java.runtime.version");
         auto version = static_cast<jstring>(openjdk->CallStaticObjectMethod(system, property, key));
         if (version == nullptr || openjdk->ExceptionCheck()) {
-            openjdk->ExceptionDescribe();
-            return "OpenJDK could not report its installed version";
+            return describe_exception(openjdk, "OpenJDK could not report its installed version");
         }
         return "OK " + from_java(openjdk, version);
+    }
+    jclass string_type = openjdk->FindClass("java/lang/String");
+    jclass loader_type = openjdk->FindClass("java/lang/ClassLoader");
+    if (string_type == nullptr || loader_type == nullptr) {
+        return describe_exception(openjdk, "OpenJDK could not load its platform classes");
+    }
+    jmethodID get_loader = openjdk->GetStaticMethodID(loader_type, "getSystemClassLoader",
+            "()Ljava/lang/ClassLoader;");
+    jmethodID load_class = openjdk->GetMethodID(loader_type, "loadClass",
+            "(Ljava/lang/String;)Ljava/lang/Class;");
+    if (get_loader == nullptr || load_class == nullptr) {
+        return describe_exception(openjdk, "OpenJDK could not look up its application class loader");
+    }
+    jobject loader = openjdk->CallStaticObjectMethod(loader_type, get_loader);
+    if (loader == nullptr || openjdk->ExceptionCheck()) {
+        return describe_exception(openjdk, "OpenJDK could not get its application class loader");
+    }
+    jstring cli_name = openjdk->NewStringUTF("jadx.cli.JadxCLI");
+    auto cli = static_cast<jclass>(openjdk->CallObjectMethod(loader, load_class, cli_name));
+    if (cli == nullptr || openjdk->ExceptionCheck()) {
+        return describe_exception(openjdk, "OpenJDK could not load JadxCLI");
+    }
+    jmethodID entry = openjdk->GetStaticMethodID(cli, "execute", "([Ljava/lang/String;)I");
+    if (entry == nullptr) {
+        return describe_exception(openjdk, "JadxCLI.execute is unavailable");
     }
     auto java_args = openjdk->NewObjectArray(static_cast<jsize>(args.size()), string_type, nullptr);
     for (jsize i = 0; i < static_cast<jsize>(args.size()); ++i) {
@@ -98,13 +133,11 @@ static std::string execute(const std::string& home, const std::string& jar,
         openjdk->DeleteLocalRef(value);
     }
     if (openjdk->ExceptionCheck()) {
-        openjdk->ExceptionDescribe();
-        return "OpenJDK could not allocate the arguments";
+        return describe_exception(openjdk, "OpenJDK could not allocate the arguments");
     }
     result = openjdk->CallStaticIntMethod(cli, entry, java_args);
     if (openjdk->ExceptionCheck()) {
-        openjdk->ExceptionDescribe();
-        return "JADX raised an exception in OpenJDK";
+        return describe_exception(openjdk, "JADX raised an exception in OpenJDK");
     }
     if (result == 0 || result == 3) {
         // The CLI uses 3 for a completed export with decompilation errors.

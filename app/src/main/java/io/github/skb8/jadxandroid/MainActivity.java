@@ -349,10 +349,15 @@ public final class MainActivity extends Activity {
                 pluginMenu();
             });
         } else if (request == SAVE_FILE && pendingFile != null) {
-            String text = pendingFile.text;
+            DocumentTab target = pendingFile;
+            Session selected = session;
             pendingFile = null;
             task("Сохранение файла…", () -> {
-                write(uri, text);
+                if (target.preview == null) {
+                    write(uri, target.text);
+                } else {
+                    selected.saveResource(target.preview.resource(), uri);
+                }
                 return null;
             }, unused -> toast("Файл сохранён"));
         }
@@ -889,10 +894,20 @@ public final class MainActivity extends Activity {
         }
         if (!tab.text.isEmpty()) {
             links.addView(button("В тексте", () -> findInDocument(tab)));
+        }
+        if (!tab.text.isEmpty() || tab.preview != null) {
             links.addView(button("Сохранить", () -> {
                 pendingFile = tab;
                 String extension = tab.source instanceof JavaClass ? (tab.smali ? ".smali" : ".java") : "";
-                create(SAVE_FILE, tab.title + extension, "text/plain");
+                String mime = "text/plain";
+                if (tab.preview != null) {
+                    mime = switch (tab.preview.resource().getDataType()) {
+                        case TEXT, RES_TABLE -> "text/plain";
+                        case DECODED_DATA, RES_LINK -> Objects.requireNonNullElse(
+                                java.net.URLConnection.guessContentTypeFromName(tab.title), "application/octet-stream");
+                    };
+                }
+                create(SAVE_FILE, tab.title + extension, mime);
             }));
         }
         links.addView(button("Закрыть", () -> closeTab(tab)));
