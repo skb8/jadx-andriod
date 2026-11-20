@@ -20,10 +20,12 @@ import java.util.Comparator;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Objects;
+import java.util.function.Function;
 import java.util.regex.Pattern;
 import javax.xml.parsers.DocumentBuilderFactory;
 
 import jadx.api.ICodeInfo;
+import jadx.api.ICodeWriter;
 import jadx.api.JadxArgs;
 import jadx.api.JadxDecompiler;
 import jadx.api.JavaClass;
@@ -34,6 +36,7 @@ import jadx.api.ResourceType;
 import jadx.api.ResourcesLoader;
 import jadx.api.data.impl.JadxNodeRef;
 import jadx.api.impl.NoOpCodeCache;
+import jadx.api.impl.SimpleCodeWriter;
 import jadx.api.security.JadxSecurityFlag;
 import jadx.api.security.impl.JadxSecurity;
 import jadx.core.dex.nodes.BlockNode;
@@ -49,8 +52,10 @@ final class Session implements AutoCloseable {
     final JadxDecompiler jadx;
     final List<JavaClass> classes;
     final List<ResourceFile> resources;
+    final boolean reducedClasspath;
     private final Context context;
     private final Path directory;
+    private final Function<JadxArgs, ICodeWriter> defaultCodeWriter;
 
     record Hit(JavaClass cls, int position, String text) {}
     record MethodCall(String label, JavaMethod target) {}
@@ -59,8 +64,13 @@ final class Session implements AutoCloseable {
     record Preview(String text, Bitmap image, ResContainer resource) {}
 
     Session(Context context, Project project, PluginStore plugins) throws Exception {
+        this(context, project, plugins, false);
+    }
+
+    Session(Context context, Project project, PluginStore plugins, boolean reducedClasspath) throws Exception {
         this.context = context;
         this.project = project;
+        this.reducedClasspath = reducedClasspath;
         directory = Files.createTempDirectory(context.getCacheDir().toPath(), "session-");
         JadxDecompiler engine = null;
         try {
@@ -76,9 +86,10 @@ final class Session implements AutoCloseable {
                 inputs.add(file.toFile());
             }
             JadxArgs args = new JadxArgs();
+            defaultCodeWriter = args.getCodeWriterProvider();
             args.setInputFiles(inputs);
             args.setRootDir(directory.toFile());
-            args.setThreadsCount(Math.min(2, JadxArgs.DEFAULT_THREADS_COUNT));
+            args.setThreadsCount(1);
             args.setCodeCache(NoOpCodeCache.INSTANCE);
             args.setDecompilationMode(project.mode);
             args.setDeobfuscationOn(project.deobfuscate);
@@ -87,7 +98,7 @@ final class Session implements AutoCloseable {
             args.setPluginOptions(project.pluginOptions);
             args.setPluginLoader(plugins.loader());
             args.setSecurity(new AndroidSecurity());
-            args.setLoadJadxClsSetFile(true);
+            args.setLoadJadxClsSetFile(!reducedClasspath);
             Path config = Files.createDirectories(context.getFilesDir().toPath().resolve("jadx"));
             Path cache = Files.createDirectories(directory.resolve("cache"));
             Path temporary = Files.createDirectories(directory.resolve("tmp"));
@@ -106,14 +117,21 @@ final class Session implements AutoCloseable {
             classes.sort(Comparator.comparing(JavaClass::getFullName));
             resources = new ArrayList<>(jadx.getResources());
             resources.sort(Comparator.comparing(ResourceFile::getDeobfName));
-        } catch (Exception | LinkageError error) {
+        } catch (Exception | LinkageError | OutOfMemoryError error) {
             try {
                 if (engine != null) {
                     engine.close();
                 }
-                Io.deleteTree(directory);
-            } catch (Exception cleanupError) {
-                error.addSuppressed(cleanupError);
+            } catch (Exception | LinkageError | OutOfMemoryError cleanupError) {
+                if (error != cleanupError) {
+                    error.addSuppressed(cleanupError);
+                }
+            } finally {
+                try {
+                    Io.deleteTree(directory);
+                } catch (IOException cleanupError) {
+                    error.addSuppressed(cleanupError);
+                }
             }
             throw error;
         }
@@ -130,14 +148,16 @@ final class Session implements AutoCloseable {
             if (pattern.matcher(cls.getFullName()).find()) {
                 hits.add(new Hit(cls, 0, cls.getFullName()));
             }
-            if (source) {
+            if (source && hits.size() < 400) {
+                String code = cls.getCode();
                 for (JavaNode member : cls.getMethods()) {
                     if (pattern.matcher(member.getName()).find()) {
-                        cls.getCode();
                         hits.add(new Hit(cls, member.getDefPos(), member.getFullName()));
+                        if (hits.size() == 400) {
+                            break;
+                        }
                     }
                 }
-                String code = cls.getCode();
                 var match = pattern.matcher(code);
                 while (hits.size() < 400 && match.find()) {
                     hits.add(new Hit(cls, match.start(), hitText(cls, code, match.start())));
@@ -317,9 +337,14 @@ final class Session implements AutoCloseable {
             args.setOutDirRes(output.resolve("resources").toFile());
             args.setExportAsGradleProject(gradle);
             args.setOutputFormat(json ? JadxArgs.OutputFormatEnum.JSON : JadxArgs.OutputFormatEnum.JAVA);
+            Function<JadxArgs, ICodeWriter> writer = args.getCodeWriterProvider();
             try {
+                if (!json && writer == defaultCodeWriter) {
+                    args.setCodeWriterProvider(SimpleCodeWriter::new);
+                }
                 jadx.save();
             } finally {
+                args.setCodeWriterProvider(writer);
                 args.setExportAsGradleProject(false);
                 args.setOutputFormat(JadxArgs.OutputFormatEnum.JAVA);
             }

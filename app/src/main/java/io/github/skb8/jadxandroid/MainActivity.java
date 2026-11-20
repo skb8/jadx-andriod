@@ -67,6 +67,7 @@ public final class MainActivity extends Activity {
     private static final int EXPORT_ZIP = 4;
     private static final int INSTALL_PLUGIN = 5;
     private static final int SAVE_FILE = 6;
+    private static final int CODE_PAGE_SIZE = 64 * 1024;
     private static final int BACKGROUND = Color.rgb(17, 25, 22);
     private static final int PANEL = Color.rgb(28, 40, 35);
     private static final int INK = Color.rgb(231, 242, 235);
@@ -125,15 +126,21 @@ public final class MainActivity extends Activity {
     private static final class DocumentTab {
         final Object source;
         final String title;
-        String text = "";
+        String text;
         Session.Preview preview;
         boolean smali;
+        int page;
         int scroll;
         int scrollX;
 
         DocumentTab(Object source, String title) {
             this.source = source;
             this.title = title;
+        }
+
+        void releaseContent() {
+            text = null;
+            preview = null;
         }
     }
 
@@ -304,6 +311,9 @@ public final class MainActivity extends Activity {
     protected void onActivityResult(int request, int result, Intent data) {
         super.onActivityResult(request, result, data);
         if (result != RESULT_OK || data == null) {
+            if (request == SAVE_FILE) {
+                pendingFile = null;
+            }
             return;
         }
         Uri uri = data.getData();
@@ -398,7 +408,11 @@ public final class MainActivity extends Activity {
             if (previous != null) {
                 closeQuietly(previous);
             }
-            return new Session(getApplicationContext(), project, plugins);
+            try {
+                return new Session(getApplicationContext(), project, plugins);
+            } catch (OutOfMemoryError memory) {
+                return new Session(getApplicationContext(), project, plugins, true);
+            }
         }, loaded -> {
             session = loaded;
             persist();
@@ -407,6 +421,9 @@ public final class MainActivity extends Activity {
                 show(Screen.RESOURCES);
             } else {
                 show(Screen.CLASSES);
+            }
+            if (loaded.reducedClasspath) {
+                toast("Проект открыт с сокращённой информацией о системных классах");
             }
         });
     }
@@ -423,7 +440,7 @@ public final class MainActivity extends Activity {
     private static void closeQuietly(Session closing) {
         try {
             closing.close();
-        } catch (Exception e) {
+        } catch (Exception | OutOfMemoryError e) {
             android.util.Log.w("JADX", "Could not close project", e);
         }
     }
@@ -598,6 +615,9 @@ public final class MainActivity extends Activity {
 
     private void show(Screen screen) {
         rememberViewport();
+        if (this.screen == Screen.CODE && screen != Screen.CODE && current != null && current != pendingFile) {
+            current.releaseContent();
+        }
         this.screen = screen;
         if (screen == Screen.CLASSES || screen == Screen.RESOURCES) {
             lastTree = screen;
@@ -673,7 +693,7 @@ public final class MainActivity extends Activity {
             strip.setPadding(dp(8), 0, dp(8), 0);
             Button active = null;
             for (DocumentTab tab : documents) {
-                Button item = button(tab.title, () -> switchTab(tab, -1));
+                Button item = button(tab.title, () -> activateTab(tab, -1));
                 truncate(item, TextUtils.TruncateAt.MIDDLE);
                 item.setMaxWidth(dp(190));
                 boolean selected = screen == Screen.CODE && tab == current;
@@ -877,7 +897,7 @@ public final class MainActivity extends Activity {
         JavaClass parent = cls.getTopParentClass();
         DocumentTab existing = findTab(parent);
         if (existing != null && !existing.smali) {
-            switchTab(existing, position);
+            activateTab(existing, position);
             return;
         }
         DocumentTab tab = existing == null ? new DocumentTab(parent, parent.getName()) : existing;
@@ -897,17 +917,30 @@ public final class MainActivity extends Activity {
     private void openResource(Object resource, String name) {
         DocumentTab existing = findTab(resource);
         if (existing != null) {
-            switchTab(existing, -1);
+            activateTab(existing, -1);
             return;
         }
         DocumentTab tab = new DocumentTab(resource, name.substring(name.lastIndexOf('/') + 1));
+        activateTab(tab, 0);
+    }
+
+    private void activateTab(DocumentTab tab, int position) {
+        if (tab.text != null) {
+            switchTab(tab, position);
+            return;
+        }
+        if (tab.source instanceof JavaClass) {
+            loadClass(tab, tab.smali, position);
+            return;
+        }
         Session selected = session;
         task("Чтение ресурса…",
-                () -> resource instanceof ResourceFile file ? selected.preview(file) : selected.preview((ResContainer) resource),
+                () -> tab.source instanceof ResourceFile file
+                        ? selected.preview(file) : selected.preview((ResContainer) tab.source),
                 preview -> {
                     tab.preview = preview;
                     tab.text = preview.text();
-                    switchTab(tab, 0);
+                    switchTab(tab, position);
                 });
     }
 
@@ -922,6 +955,9 @@ public final class MainActivity extends Activity {
 
     private void switchTab(DocumentTab tab, int position) {
         rememberViewport();
+        if (current != null && current != tab && current != pendingFile) {
+            current.releaseContent();
+        }
         if (screen != Screen.CODE) {
             returnFromCode = screen;
         }
@@ -934,6 +970,12 @@ public final class MainActivity extends Activity {
         }
         current = tab;
         screen = Screen.CODE;
+        if (position >= 0) {
+            tab.page = codePageForPosition(tab.text, Math.min(position, tab.text.length()));
+            tab.scroll = 0;
+            tab.scrollX = 0;
+        }
+        tab.page = Math.min(tab.page, lastCodePage(tab.text));
         render();
         if (position >= 0) {
             scrollTo(position);
@@ -944,12 +986,14 @@ public final class MainActivity extends Activity {
         rememberViewport();
         documents.remove(tab);
         if (current == tab) {
+            if (tab != pendingFile) {
+                tab.releaseContent();
+            }
             current = null;
             if (screen == Screen.CODE) {
-                if (documents.isEmpty()) {
-                    show(returnFromCode);
-                } else {
-                    switchTab(documents.get(documents.size() - 1), -1);
+                show(returnFromCode);
+                if (!documents.isEmpty()) {
+                    activateTab(documents.get(documents.size() - 1), -1);
                 }
                 return;
             }
@@ -1028,6 +1072,21 @@ public final class MainActivity extends Activity {
         if (links.getChildCount() > 0) {
             body.addView(horizontal(links));
         }
+        if (lastCodePage(tab.text) > 0) {
+            LinearLayout pages = row();
+            Button previous = button("‹", () -> showCodePage(tab, tab.page - 1));
+            previous.setContentDescription("Предыдущая страница кода");
+            previous.setEnabled(tab.page > 0);
+            pages.addView(previous);
+            TextView page = text((tab.page + 1) + " / " + (lastCodePage(tab.text) + 1), 13, MUTED);
+            page.setGravity(Gravity.CENTER);
+            pages.addView(page, new LinearLayout.LayoutParams(0, -2, 1));
+            Button next = button("›", () -> showCodePage(tab, tab.page + 1));
+            next.setContentDescription("Следующая страница кода");
+            next.setEnabled(tab.page < lastCodePage(tab.text));
+            pages.addView(next);
+            body.addView(pages);
+        }
 
         ScrollView vertical = new ScrollView(this);
         codeScroll = vertical;
@@ -1052,10 +1111,38 @@ public final class MainActivity extends Activity {
         code.setTypeface(Typeface.MONOSPACE);
         code.setTextIsSelectable(true);
         code.setPadding(dp(16), dp(12), dp(16), dp(24));
-        code.setText(highlight(tab.text));
+        int start = codePageStart(tab.text, tab.page);
+        int end = codePageStart(tab.text, tab.page + 1);
+        code.setText(highlight(tab.text.substring(start, end)));
         horizontal.addView(code, new HorizontalScrollView.LayoutParams(-2, -2));
         codeView = code;
         horizontal.post(() -> horizontal.scrollTo(tab.scrollX, 0));
+    }
+
+    private static int lastCodePage(String text) {
+        return Math.max(0, text.length() - 1) / CODE_PAGE_SIZE;
+    }
+
+    private static int codePageStart(String text, int page) {
+        int start = (int) Math.min((long) page * CODE_PAGE_SIZE, text.length());
+        if (start > 0 && start < text.length()
+                && Character.isSurrogatePair(text.charAt(start - 1), text.charAt(start))) {
+            return start - 1;
+        }
+        return start;
+    }
+
+    private static int codePageForPosition(String text, int position) {
+        int last = lastCodePage(text);
+        int page = Math.min(position / CODE_PAGE_SIZE, last);
+        return page < last && position >= codePageStart(text, page + 1) ? page + 1 : page;
+    }
+
+    private void showCodePage(DocumentTab tab, int page) {
+        tab.page = page;
+        tab.scroll = 0;
+        tab.scrollX = 0;
+        render();
     }
 
     private CharSequence highlight(String text) {
@@ -1082,6 +1169,16 @@ public final class MainActivity extends Activity {
     }
 
     private void scrollTo(int position) {
+        DocumentTab tab = current;
+        if (tab == null || tab.text == null) {
+            return;
+        }
+        int safePosition = Math.max(0, Math.min(position, tab.text.length()));
+        int page = codePageForPosition(tab.text, safePosition);
+        if (page != tab.page) {
+            showCodePage(tab, page);
+        }
+        int pagePosition = safePosition - codePageStart(tab.text, page);
         TextView view = codeView;
         ScrollView scroll = codeScroll;
         HorizontalScrollView horizontal = codeHorizontal;
@@ -1089,7 +1186,7 @@ public final class MainActivity extends Activity {
         if (view != null && scroll != null) {
             view.post(() -> {
                 if (generation == expected && view.getLayout() != null) {
-                    int safe = Math.max(0, Math.min(position, view.length()));
+                    int safe = Math.max(0, Math.min(pagePosition, view.length()));
                     int line = view.getLayout().getLineForOffset(safe);
                     scroll.scrollTo(0, view.getLayout().getLineTop(line));
                     if (horizontal != null) {
@@ -1144,11 +1241,12 @@ public final class MainActivity extends Activity {
             toast("Выделите имя символа в коде");
             return;
         }
+        int position = chosen + codePageStart(current.text, current.page);
         Session selected = session;
         task("Поиск символа…", () -> {
             var info = cls.getCodeInfo();
-            JavaNode node = selected.jadx.getJavaNodeAtPosition(info, chosen);
-            return node != null ? node : selected.jadx.getClosestJavaNode(info, chosen);
+            JavaNode node = selected.jadx.getJavaNodeAtPosition(info, position);
+            return node != null ? node : selected.jadx.getClosestJavaNode(info, position);
         }, node -> {
             if (node == null) {
                 toast("Символ не найден");
@@ -1302,12 +1400,35 @@ public final class MainActivity extends Activity {
                 progress.setVisibility(View.GONE);
                 showProjectStatus();
                 if (failure == null) {
-                    deliver.accept(result);
+                    try {
+                        deliver.accept(result);
+                    } catch (OutOfMemoryError memory) {
+                        reportMemoryError(caption, memory);
+                    }
+                } else if (failure instanceof OutOfMemoryError memory) {
+                    reportMemoryError(caption, memory);
                 } else {
                     reportError(failure);
                 }
             });
         });
+    }
+
+    private void reportMemoryError(String operation, OutOfMemoryError error) {
+        android.util.Log.e("JADX", operation, error);
+        Session failed = session;
+        session = null;
+        pendingFile = null;
+        resetViews();
+        show(Screen.CLASSES);
+        if (failed != null) {
+            worker.execute(() -> closeQuietly(failed));
+        }
+        new AlertDialog.Builder(this).setTitle("Недостаточно памяти")
+                .setMessage("JADX исчерпал память во время операции «" + operation + "». "
+                        + "Для большого APK можно открыть его DEX-файлы по одному. "
+                        + "Последний успешно открытый проект доступен в меню.")
+                .setPositiveButton("Закрыть", null).show();
     }
 
     private void reportError(Throwable error) {

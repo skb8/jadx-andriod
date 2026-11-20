@@ -71,6 +71,8 @@ public final class JadxSmokeTest {
                 assertTrue(session.search("return 42", false, true, true).size() > 0);
                 var method = cls.getMethods().stream().filter(node -> node.getName().equals("answer"))
                         .findFirst().orElseThrow();
+                assertTrue(session.search("answer", false, true, true).stream()
+                        .anyMatch(hit -> hit.text().equals(method.getFullName()) && hit.position() > 0));
                 var caller = cls.getMethods().stream().filter(node -> node.getName().equals("caller"))
                         .findFirst().orElseThrow();
                 assertTrue(session.calls(caller).callees().stream().anyMatch(call -> method.equals(call.target())));
@@ -103,17 +105,31 @@ public final class JadxSmokeTest {
         String previous = preferences.getString("lastProject", null);
         try {
             try (var stream = Objects.requireNonNull(context.getContentResolver().openOutputStream(input))) {
-                stream.write(SMALI.getBytes(StandardCharsets.UTF_8));
+                StringBuilder fields = new StringBuilder();
+                for (int i = 0; i < 2_200; i++) {
+                    fields.append(".field public static final testField").append(i)
+                            .append(":I = 0x").append(Integer.toHexString(i)).append('\n');
+                }
+                String largeClass = SMALI.replace(".method public static answer()I", fields + "\n.method public static answer()I");
+                stream.write(largeClass.getBytes(StandardCharsets.UTF_8));
             }
             preferences.edit().putString("lastProject", new Project(List.of(input)).serialize()).commit();
             try (var scenario = ActivityScenario.launch(MainActivity.class)) {
                 visitView(scenario, "sample/", view -> hasLabel(view, "sample/"), true);
                 visitView(scenario, "Smoke", view -> hasLabel(view, "Smoke"), true);
                 visitView(scenario, "sample.Smoke", view -> hasLabel(view, "sample.Smoke"), false);
+                visitView(scenario, "Следующая страница кода",
+                        view -> TextUtils.equals("Следующая страница кода", view.getContentDescription()), true);
+                visitView(scenario, "вторая страница кода", JadxSmokeTest::showsSecondPage, false);
                 visitView(scenario, "Вернуться к списку",
                         view -> TextUtils.equals("Вернуться к списку", view.getContentDescription()), true);
                 visitView(scenario, "класс Smoke в списке",
                         view -> view.getParent() instanceof ListView && hasLabel(view, "Smoke"), false);
+                visitView(scenario, "вкладка Smoke",
+                        view -> view instanceof android.widget.Button && hasLabel(view, "Smoke"), true);
+                visitView(scenario, "сохранённая вторая страница кода", JadxSmokeTest::showsSecondPage, false);
+                visitView(scenario, "Вернуться к списку",
+                        view -> TextUtils.equals("Вернуться к списку", view.getContentDescription()), true);
                 visitView(scenario, "Ресурсы", view -> hasLabel(view, "Ресурсы"), true);
                 visitView(scenario, "Классы", view -> hasLabel(view, "Классы"), true);
                 visitView(scenario, "класс Smoke в списке",
@@ -153,6 +169,10 @@ public final class JadxSmokeTest {
 
     private static boolean hasLabel(View view, String label) {
         return view instanceof TextView text && label.contentEquals(text.getText());
+    }
+
+    private static boolean showsSecondPage(View view) {
+        return view instanceof TextView text && text.getText().toString().startsWith("2 / ");
     }
 
     private static View find(View view, Predicate<View> selector) {

@@ -1,7 +1,7 @@
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
     <uses-permission android:name="android.permission.INTERNET" />
     <application android:label="JADX Android" android:icon="@drawable/ic_jadx"
-        android:theme="@style/AppTheme" android:allowBackup="false"
+        android:theme="@style/AppTheme" android:allowBackup="false" android:largeHeap="true"
         android:enableOnBackInvokedCallback="true">
         <activity android:name=".MainActivity" android:exported="true" android:launchMode="singleTask"
             android:configChanges="orientation|screenSize|keyboardHidden|screenLayout">
