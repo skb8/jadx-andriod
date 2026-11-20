@@ -213,7 +213,7 @@ final class OpenJdk {
             public void onServiceDisconnected(ComponentName name) {
                 try {
                     if (Files.exists(resultFile)) {
-                        answer.complete(Files.readString(resultFile));
+                        answer.complete(Io.readText(resultFile));
                     } else {
                         answer.completeExceptionally(new IOException("Процесс OpenJDK завершился досрочно"));
                     }

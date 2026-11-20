@@ -11,7 +11,6 @@ import android.os.Messenger;
 import android.os.Process;
 
 import java.io.IOException;
-import java.nio.file.Files;
 import java.nio.file.Path;
 
 public final class OpenJdkService extends Service {
@@ -41,7 +40,7 @@ public final class OpenJdkService extends Service {
                 result = "OpenJDK: " + error;
             }
             try {
-                Files.writeString(Path.of(job.getString("work"), "openjdk-result"), result);
+                Io.writeText(Path.of(job.getString("work"), "openjdk-result"), result);
             } catch (IOException error) {
                 android.util.Log.e("JADX", "Could not store OpenJDK result", error);
             } finally {

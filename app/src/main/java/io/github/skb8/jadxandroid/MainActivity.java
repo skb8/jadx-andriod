@@ -48,6 +48,7 @@ import java.util.regex.Pattern;
 
 import jadx.api.DecompilationMode;
 import jadx.api.JavaClass;
+import jadx.api.JavaMethod;
 import jadx.api.JavaNode;
 import jadx.api.ResourceFile;
 import jadx.api.data.impl.JadxNodeRef;
@@ -1032,11 +1033,54 @@ public final class MainActivity extends Activity {
             options.add(new Entry("Переименовать", () -> edit(node, true)));
             options.add(new Entry("Комментарий", () -> edit(node, false)));
         }
+        if (node instanceof JavaMethod method && !method.getMethodNode().isNoCode()) {
+            options.add(new Entry("Поток управления", () -> choose("Поток управления", List.of(
+                    new Entry("Базовые блоки", () -> controlFlow(method, false)),
+                    new Entry("Блоки до SSA", () -> controlFlow(method, true))))));
+        }
         options.add(new Entry("Копировать имя", () -> {
             ClipboardManager clipboard = getSystemService(ClipboardManager.class);
             clipboard.setPrimaryClip(ClipData.newPlainText("JADX", node.getFullName()));
         }));
         choose(node.getFullName(), options);
+    }
+
+    private void controlFlow(JavaMethod method, boolean raw) {
+        Session selected = session;
+        task("Построение графа…", () -> selected.controlFlow(method, raw), blocks -> {
+            List<Entry> entries = new ArrayList<>();
+            Map<Integer, Session.CfgBlock> byId = new java.util.HashMap<>();
+            for (Session.CfgBlock block : blocks) {
+                byId.put(block.id(), block);
+            }
+            for (Session.CfgBlock block : blocks) {
+                String targets = block.successors().stream().map(id -> "B" + id)
+                        .collect(java.util.stream.Collectors.joining(", "));
+                String label = "B" + block.id() + (targets.isEmpty() ? "" : "  →  " + targets);
+                entries.add(new Entry(label, () -> blockDetails(block, byId)));
+            }
+            choose("CFG · " + method.getName(), entries);
+        });
+    }
+
+    private void blockDetails(Session.CfgBlock block, Map<Integer, Session.CfgBlock> byId) {
+        AlertDialog.Builder dialog = new AlertDialog.Builder(this)
+                .setTitle("B" + block.id() + (block.offset() < 0 ? "" : " · 0x" + Integer.toHexString(block.offset())))
+                .setMessage(block.instructions().isEmpty() ? "Пустой блок" : String.join("\n", block.instructions()))
+                .setNegativeButton("Закрыть", null);
+        if (!block.successors().isEmpty()) {
+            dialog.setPositiveButton("Переходы", (unused, which) -> {
+                List<Entry> next = new ArrayList<>();
+                for (int id : block.successors()) {
+                    Session.CfgBlock target = byId.get(id);
+                    if (target != null) {
+                        next.add(new Entry("B" + id, () -> blockDetails(target, byId)));
+                    }
+                }
+                choose("Переходы из B" + block.id(), next);
+            });
+        }
+        dialog.show();
     }
 
     private void edit(JavaNode node, boolean rename) {

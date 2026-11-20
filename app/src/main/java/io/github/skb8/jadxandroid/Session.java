@@ -27,6 +27,7 @@ import jadx.api.JadxArgs;
 import jadx.api.JadxDecompiler;
 import jadx.api.JavaClass;
 import jadx.api.JavaNode;
+import jadx.api.JavaMethod;
 import jadx.api.ResourceFile;
 import jadx.api.ResourceType;
 import jadx.api.ResourcesLoader;
@@ -34,6 +35,7 @@ import jadx.api.data.impl.JadxNodeRef;
 import jadx.api.impl.NoOpCodeCache;
 import jadx.api.security.JadxSecurityFlag;
 import jadx.api.security.impl.JadxSecurity;
+import jadx.core.dex.nodes.BlockNode;
 import jadx.core.plugins.files.IJadxFilesGetter;
 import jadx.core.xmlgen.ResContainer;
 
@@ -49,6 +51,7 @@ final class Session implements AutoCloseable {
     private final Path directory;
 
     record Hit(JavaClass cls, int position, String text) {}
+    record CfgBlock(int id, int offset, List<String> instructions, List<Integer> successors) {}
     record Preview(String text, Bitmap image, ResContainer resource) {}
 
     Session(Context context, Project project, PluginStore plugins) throws Exception {
@@ -157,6 +160,28 @@ final class Session implements AutoCloseable {
             }
         }
         return hits;
+    }
+
+    List<CfgBlock> controlFlow(JavaMethod method, boolean raw) {
+        var node = method.getMethodNode();
+        try {
+            boolean processed = node.root().getProcessClasses().processMethodUntilVisitor(node,
+                    raw ? "SSATransform" : "RegionMakerVisitor", false);
+            if (!processed || node.getBasicBlocks() == null) {
+                return List.of();
+            }
+            List<CfgBlock> graph = new ArrayList<>();
+            for (BlockNode block : node.getBasicBlocks()) {
+                List<String> instructions = new ArrayList<>();
+                block.getInstructions().forEach(instruction -> instructions.add(instruction.toString()));
+                List<Integer> successors = new ArrayList<>();
+                block.getSuccessors().forEach(next -> successors.add(next.getId()));
+                graph.add(new CfgBlock(block.getId(), block.getStartOffset(), instructions, successors));
+            }
+            return graph;
+        } finally {
+            node.unload();
+        }
     }
 
     private static String hitText(JavaClass cls, String code, int position) {

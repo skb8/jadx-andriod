@@ -90,9 +90,9 @@ public final class JadxSmokeTest {
             assertTrue(runtime.run(major, temporary).startsWith(version + "."));
             var input = temporary.resolve("Smoke.smali");
             var output = Files.createDirectory(temporary.resolve("output"));
-            Files.writeString(input, SMALI);
+            Io.writeText(input, SMALI);
             assertEquals("0", runtime.run(major, temporary, "-q", "-d", output.toString(), input.toString()));
-            assertTrue(Files.readString(output.resolve("sources/sample/Smoke.java")).contains("return 42"));
+            assertTrue(Io.readText(output.resolve("sources/sample/Smoke.java")).contains("return 42"));
         } finally {
             Io.deleteTree(temporary);
         }
