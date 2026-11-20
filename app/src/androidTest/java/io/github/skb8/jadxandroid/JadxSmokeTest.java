@@ -203,6 +203,7 @@ public final class JadxSmokeTest {
         values.put(MediaStore.MediaColumns.DISPLAY_NAME, name);
         values.put(MediaStore.MediaColumns.MIME_TYPE, "application/octet-stream");
         values.put(MediaStore.MediaColumns.RELATIVE_PATH, "Download/JadxSmoke");
+        values.put(MediaStore.MediaColumns.IS_PENDING, 1);
         return Objects.requireNonNull(context.getContentResolver().insert(
                 MediaStore.Downloads.EXTERNAL_CONTENT_URI, values));
     }
