@@ -27,7 +27,7 @@ jadxVersion=1.5.6
 
 ## Сборка
 
-Нужны JDK 17, Android SDK 35, Build Tools 34.0.0 и NDK 27.2.12479018.
+Нужны JDK 17, Android SDK 35, Build Tools 35.0.0 и NDK 27.2.12479018.
 
 ```sh
 ./gradlew :app:assembleDebug :app:lintDebug

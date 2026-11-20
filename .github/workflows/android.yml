@@ -14,7 +14,7 @@ jobs:
     timeout-minutes: 25
     steps:
       - uses: actions/checkout@v4
-      - uses: actions/setup-java@v4
+      - uses: actions/setup-java@v5
         with:
           distribution: temurin
           java-version: '21'
@@ -22,7 +22,7 @@ jobs:
       - name: Install Android SDK packages
         run: |
           manager="$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager"
-          "$manager" --sdk_root="$ANDROID_HOME" 'platforms;android-35' 'build-tools;34.0.0' 'ndk;27.2.12479018'
+          "$manager" --sdk_root="$ANDROID_HOME" 'platforms;android-35' 'build-tools;35.0.0' 'ndk;27.2.12479018'
       - run: ./gradlew --no-daemon :app:assembleDebug :app:lintDebug
       - uses: actions/upload-artifact@v4
         with:
@@ -44,3 +44,10 @@ jobs:
           script: |
             ./gradlew --no-daemon :app:connectedDebugAndroidTest -Pandroid.testInstrumentationRunnerArguments.openjdk=17 || (adb logcat -d -t 3000 | grep -E 'JADX|Jadx|openjdk|libjvm|AndroidRuntime|FATAL|Fatal signal' || true; exit 1)
             ./gradlew --no-daemon :app:connectedDebugAndroidTest -Pandroid.testInstrumentationRunnerArguments.openjdk=21 || (adb logcat -d -t 3000 | grep -E 'JADX|Jadx|openjdk|libjvm|AndroidRuntime|FATAL|Fatal signal' || true; exit 1)
+      - name: Upload Android test reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: jadx-android-test-results
+          path: app/build/outputs/androidTest-results/connected/
+          if-no-files-found: ignore
