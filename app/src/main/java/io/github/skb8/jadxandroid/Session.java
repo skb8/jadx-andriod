@@ -17,6 +17,7 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.Comparator;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Objects;
 import java.util.regex.Pattern;
@@ -36,6 +37,7 @@ import jadx.api.impl.NoOpCodeCache;
 import jadx.api.security.JadxSecurityFlag;
 import jadx.api.security.impl.JadxSecurity;
 import jadx.core.dex.nodes.BlockNode;
+import jadx.core.dex.instructions.InvokeNode;
 import jadx.core.plugins.files.IJadxFilesGetter;
 import jadx.core.xmlgen.ResContainer;
 
@@ -51,6 +53,8 @@ final class Session implements AutoCloseable {
     private final Path directory;
 
     record Hit(JavaClass cls, int position, String text) {}
+    record MethodCall(String label, JavaMethod target) {}
+    record CallGraph(List<MethodCall> callers, List<MethodCall> callees) {}
     record CfgBlock(int id, int offset, List<String> instructions, List<Integer> successors) {}
     record Preview(String text, Bitmap image, ResContainer resource) {}
 
@@ -160,6 +164,36 @@ final class Session implements AutoCloseable {
             }
         }
         return hits;
+    }
+
+    CallGraph calls(JavaMethod method) throws Exception {
+        List<MethodCall> callers = new ArrayList<>();
+        for (JavaNode caller : method.getUseIn()) {
+            if (caller instanceof JavaMethod from) {
+                callers.add(new MethodCall(from.toString(), from));
+            }
+        }
+        var callees = new LinkedHashMap<String, MethodCall>();
+        var node = method.getMethodNode();
+        if (!node.isNoCode()) {
+            try {
+                node.unload();
+                node.load();
+                for (var instruction : node.getInstructions()) {
+                    if (instruction instanceof InvokeNode invoke) {
+                        var info = invoke.getCallMth();
+                        var resolved = node.root().resolveMethod(info);
+                        JavaNode target = resolved == null ? null : jadx.getJavaNodeByRef(resolved);
+                        String label = target == null ? info.getFullId() : target.toString();
+                        callees.putIfAbsent(info.getRawFullId(),
+                                new MethodCall(label, target instanceof JavaMethod reachable ? reachable : null));
+                    }
+                }
+            } finally {
+                node.unload();
+            }
+        }
+        return new CallGraph(callers, new ArrayList<>(callees.values()));
     }
 
     List<CfgBlock> controlFlow(JavaMethod method, boolean raw) {

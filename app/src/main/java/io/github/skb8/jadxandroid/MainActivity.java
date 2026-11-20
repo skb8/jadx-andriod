@@ -1054,6 +1054,9 @@ public final class MainActivity extends Activity {
             options.add(new Entry("Переименовать", () -> edit(node, true)));
             options.add(new Entry("Комментарий", () -> edit(node, false)));
         }
+        if (node instanceof JavaMethod method) {
+            options.add(new Entry("Граф вызовов", () -> callGraph(method)));
+        }
         if (node instanceof JavaMethod method && !method.getMethodNode().isNoCode()) {
             options.add(new Entry("Поток управления", () -> choose("Поток управления", List.of(
                     new Entry("Базовые блоки", () -> controlFlow(method, false)),
@@ -1064,6 +1067,30 @@ public final class MainActivity extends Activity {
             clipboard.setPrimaryClip(ClipData.newPlainText("JADX", node.getFullName()));
         }));
         choose(node.getFullName(), options);
+    }
+
+    private void callGraph(JavaMethod method) {
+        Session selected = session;
+        task("Построение графа вызовов…", () -> selected.calls(method), graph -> choose(
+                method.getFullName(), List.of(
+                        new Entry("Вызывающие · " + graph.callers().size(),
+                                () -> showCalls("Вызывающие методы", graph.callers())),
+                        new Entry("Вызываемые · " + graph.callees().size(),
+                                () -> showCalls("Вызываемые методы", graph.callees())))));
+    }
+
+    private void showCalls(String title, List<Session.MethodCall> calls) {
+        List<Entry> entries = new ArrayList<>();
+        for (Session.MethodCall call : calls) {
+            entries.add(new Entry(call.label(), () -> {
+                if (call.target() == null) {
+                    toast("Метод находится вне открытого проекта");
+                } else {
+                    symbolActions(call.target());
+                }
+            }));
+        }
+        choose(title, entries);
     }
 
     private void controlFlow(JavaMethod method, boolean raw) {

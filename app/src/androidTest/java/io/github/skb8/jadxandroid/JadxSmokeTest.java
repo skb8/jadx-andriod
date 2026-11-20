@@ -35,6 +35,13 @@ public final class JadxSmokeTest {
                 const/16 v0, 0x2a
                 return v0
             .end method
+
+            .method public static caller()I
+                .registers 1
+                invoke-static {}, Lsample/Smoke;->answer()I
+                move-result v0
+                return v0
+            .end method
             """;
 
     @Test
@@ -56,6 +63,10 @@ public final class JadxSmokeTest {
                 assertTrue(session.search("return 42", false, true, true).size() > 0);
                 var method = cls.getMethods().stream().filter(node -> node.getName().equals("answer"))
                         .findFirst().orElseThrow();
+                var caller = cls.getMethods().stream().filter(node -> node.getName().equals("caller"))
+                        .findFirst().orElseThrow();
+                assertTrue(session.calls(caller).callees().stream().anyMatch(call -> method.equals(call.target())));
+                assertTrue(session.calls(method).callers().stream().anyMatch(call -> caller.equals(call.target())));
                 session.edit(method, "test comment", false);
                 assertEquals("test comment", project.comments.get(JadxNodeRef.forMth(method)));
                 assertTrue(cls.getCode().contains("test comment"));
