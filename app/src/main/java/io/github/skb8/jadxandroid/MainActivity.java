@@ -422,8 +422,8 @@ public final class MainActivity extends Activity {
             } else {
                 show(Screen.CLASSES);
             }
-            if (loaded.reducedClasspath) {
-                toast("Проект открыт с сокращённой информацией о системных классах");
+            if (loaded.reducedMemoryMode) {
+                toast("Экономный режим: доступен просмотр кода, поиск использований отключён");
             }
         });
     }
@@ -1265,11 +1265,13 @@ public final class MainActivity extends Activity {
                 return node.getDefPos();
             }, position -> openClass(parent, position));
         }));
-        options.add(new Entry("Найти использования", () -> {
-            Session selected = session;
-            task("Поиск использований…", () -> selected.usages(node),
-                    hits -> showHits("Использования · " + node.getName(), hits));
-        }));
+        if (!session.reducedMemoryMode) {
+            options.add(new Entry("Найти использования", () -> {
+                Session selected = session;
+                task("Поиск использований…", () -> selected.usages(node),
+                        hits -> showHits("Использования · " + node.getName(), hits));
+            }));
+        }
         if (JadxNodeRef.forJavaNode(node) != null) {
             options.add(new Entry("Переименовать", () -> edit(node, true)));
             options.add(new Entry("Комментарий", () -> edit(node, false)));
@@ -1291,12 +1293,16 @@ public final class MainActivity extends Activity {
 
     private void callGraph(JavaMethod method) {
         Session selected = session;
-        task("Построение графа вызовов…", () -> selected.calls(method), graph -> choose(
-                method.getFullName(), List.of(
-                        new Entry("Вызывающие · " + graph.callers().size(),
-                                () -> showCalls("Вызывающие методы", graph.callers())),
-                        new Entry("Вызываемые · " + graph.callees().size(),
-                                () -> showCalls("Вызываемые методы", graph.callees())))));
+        task("Построение графа вызовов…", () -> selected.calls(method), graph -> {
+            List<Entry> entries = new ArrayList<>();
+            if (!selected.reducedMemoryMode) {
+                entries.add(new Entry("Вызывающие · " + graph.callers().size(),
+                        () -> showCalls("Вызывающие методы", graph.callers())));
+            }
+            entries.add(new Entry("Вызываемые · " + graph.callees().size(),
+                    () -> showCalls("Вызываемые методы", graph.callees())));
+            choose(method.getFullName(), entries);
+        });
     }
 
     private void showCalls(String title, List<Session.MethodCall> calls) {
@@ -1487,7 +1493,8 @@ public final class MainActivity extends Activity {
 
     private void showProjectStatus() {
         status.setText(session == null ? "JADX " + BuildConfig.JADX_VERSION
-                : "Классы " + session.classes.size() + "   ·   Ресурсы " + session.resources.size());
+                : "Классы " + session.classes.size() + "   ·   Ресурсы " + session.resources.size()
+                        + (session.reducedMemoryMode ? "   ·   Экономный режим" : ""));
     }
 
     private LinearLayout form() {

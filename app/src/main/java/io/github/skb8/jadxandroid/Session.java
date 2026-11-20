@@ -52,7 +52,7 @@ final class Session implements AutoCloseable {
     final JadxDecompiler jadx;
     final List<JavaClass> classes;
     final List<ResourceFile> resources;
-    final boolean reducedClasspath;
+    final boolean reducedMemoryMode;
     private final Context context;
     private final Path directory;
     private final Function<JadxArgs, ICodeWriter> defaultCodeWriter;
@@ -67,10 +67,10 @@ final class Session implements AutoCloseable {
         this(context, project, plugins, false);
     }
 
-    Session(Context context, Project project, PluginStore plugins, boolean reducedClasspath) throws Exception {
+    Session(Context context, Project project, PluginStore plugins, boolean reducedMemoryMode) throws Exception {
         this.context = context;
         this.project = project;
-        this.reducedClasspath = reducedClasspath;
+        this.reducedMemoryMode = reducedMemoryMode;
         directory = Files.createTempDirectory(context.getCacheDir().toPath(), "session-");
         JadxDecompiler engine = null;
         try {
@@ -98,7 +98,13 @@ final class Session implements AutoCloseable {
             args.setPluginOptions(project.pluginOptions);
             args.setPluginLoader(plugins.loader());
             args.setSecurity(new AndroidSecurity());
-            args.setLoadJadxClsSetFile(!reducedClasspath);
+            args.setLoadJadxClsSetFile(!reducedMemoryMode);
+            if (reducedMemoryMode) {
+                // The project-wide usage scan retains several maps until it finishes applying the index.
+                args.getDisabledPasses().add("UsageInfoVisitor");
+                args.setInlineAnonymousClasses(false);
+                args.setInlineMethods(false);
+            }
             Path config = Files.createDirectories(context.getFilesDir().toPath().resolve("jadx"));
             Path cache = Files.createDirectories(directory.resolve("cache"));
             Path temporary = Files.createDirectories(directory.resolve("tmp"));

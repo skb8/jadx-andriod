@@ -91,6 +91,11 @@ public final class JadxSmokeTest {
                 }
                 assertTrue(new String(archive.readAllBytes(), StandardCharsets.UTF_8).contains("test comment"));
             }
+            try (Session reduced = new Session(context, project, new PluginStore(context), true)) {
+                var cls = reduced.classes.get(0);
+                assertTrue(cls.getCode().contains("return 42"));
+                assertTrue(reduced.search("return 42", false, true, true).size() > 0);
+            }
         } finally {
             context.getContentResolver().delete(input, null, null);
             context.getContentResolver().delete(output, null, null);
