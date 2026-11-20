@@ -51,6 +51,7 @@ import jadx.api.JavaClass;
 import jadx.api.JavaNode;
 import jadx.api.ResourceFile;
 import jadx.api.data.impl.JadxNodeRef;
+import jadx.core.deobf.NameMapper;
 import jadx.core.xmlgen.ResContainer;
 
 public final class MainActivity extends Activity {
@@ -214,6 +215,16 @@ public final class MainActivity extends Activity {
             return;
         }
         List<Entry> options = new ArrayList<>();
+        String previous = getPreferences(MODE_PRIVATE).getString("lastProject", "");
+        if (session == null && !previous.isEmpty()) {
+            options.add(new Entry("Открыть последний проект", () -> {
+                try {
+                    open(Project.parse(previous));
+                } catch (Exception error) {
+                    reportError(error);
+                }
+            }));
+        }
         options.add(new Entry("Открыть проект", () -> pick(OPEN_PROJECT, false)));
         if (session != null) {
             options.add(new Entry("Сохранить проект", () -> create(SAVE_PROJECT, "project.jadx-android.json", "application/json")));
@@ -358,11 +369,16 @@ public final class MainActivity extends Activity {
             return;
         }
         Session previous = session;
-        task("Загрузка файлов и анализ…", () -> new Session(getApplicationContext(), project, plugins), loaded -> {
-            session = loaded;
+        session = null;
+        resetViews();
+        show(Screen.CLASSES);
+        task("Загрузка файлов и анализ…", () -> {
             if (previous != null) {
-                worker.execute(() -> closeQuietly(previous));
+                closeQuietly(previous);
             }
+            return new Session(getApplicationContext(), project, plugins);
+        }, loaded -> {
+            session = loaded;
             persist();
             resetViews();
             if (loaded.classes.isEmpty() && !loaded.resources.isEmpty()) {
@@ -1029,7 +1045,7 @@ public final class MainActivity extends Activity {
         var entries = rename ? selected.project.renames : selected.project.comments;
         prompt(rename ? "Псевдоним" : "Комментарий", "Пустое поле удаляет запись",
                 entries.getOrDefault(reference, ""), value -> {
-            if (rename && !value.isBlank() && !Pattern.matches("[\\p{javaJavaIdentifierStart}][\\p{javaJavaIdentifierPart}]*", value)) {
+            if (rename && !value.isBlank() && !NameMapper.isValidAndPrintable(value)) {
                 toast("Введите корректный идентификатор Java");
                 return;
             }

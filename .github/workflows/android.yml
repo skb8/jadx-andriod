@@ -17,10 +17,12 @@ jobs:
       - uses: actions/setup-java@v4
         with:
           distribution: temurin
-          java-version: '17'
+          java-version: '21'
       - uses: gradle/actions/setup-gradle@v4
-      - uses: android-actions/setup-android@v3
-      - run: sdkmanager 'platforms;android-35' 'build-tools;34.0.0' 'ndk;27.2.12479018'
+      - name: Install Android SDK packages
+        run: |
+          manager="$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager"
+          "$manager" --sdk_root="$ANDROID_HOME" 'platforms;android-35' 'build-tools;34.0.0' 'ndk;27.2.12479018'
       - run: ./gradlew --no-daemon :app:assembleDebug :app:lintDebug
       - uses: actions/upload-artifact@v4
         with:
