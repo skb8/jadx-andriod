@@ -1,6 +1,7 @@
 #include <jni.h>
 #include <dlfcn.h>
 #include <malloc.h>
+#include <cstdlib>
 
 #include <string>
 #include <vector>
@@ -55,6 +56,8 @@ static std::string execute(const std::string& home, const std::string& jar,
         return "JNI_CreateJavaVM unavailable";
     }
 
+    setenv("JADX_CONFIG_DIR", (work + "/config").c_str(), 1);
+    setenv("JADX_CACHE_DIR", (work + "/cache").c_str(), 1);
     std::vector<std::string> values{
         "-Djava.home=" + home,
         "-Djava.class.path=" + jar,
@@ -101,6 +104,20 @@ static std::string execute(const std::string& home, const std::string& jar,
         }
         return "OK " + from_java(openjdk, version);
     }
+#if defined(__ANDROID__)
+    // HotSpot opens its own libraries by absolute path. Load their sibling dependencies in
+    // the same Android linker namespace so DT_NEEDED entries can be resolved by SONAME.
+    const char* dependencies[] = {
+        "libjava.so", "libnet.so", "libnio.so", "libawt.so",
+        "libawt_headless.so", "libfreetype.so", "libjli.so",
+    };
+    for (const char* dependency : dependencies) {
+        std::string path = home + "/lib/" + dependency;
+        if (dlopen(path.c_str(), RTLD_NOW | RTLD_GLOBAL) == nullptr) {
+            return "OpenJDK could not load " + std::string(dependency) + ": " + dlerror();
+        }
+    }
+#endif
     jclass string_type = openjdk->FindClass("java/lang/String");
     jclass loader_type = openjdk->FindClass("java/lang/ClassLoader");
     if (string_type == nullptr || loader_type == nullptr) {
