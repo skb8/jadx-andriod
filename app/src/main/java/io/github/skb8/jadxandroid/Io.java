@@ -4,7 +4,6 @@ import java.io.ByteArrayOutputStream;
 import java.io.IOException;
 import java.io.InputStream;
 import java.io.OutputStream;
-import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.Comparator;
@@ -31,14 +30,6 @@ final class Io {
         ByteArrayOutputStream output = new ByteArrayOutputStream();
         copy(input, output, max);
         return output.toByteArray();
-    }
-
-    static String readText(Path file) throws IOException {
-        return new String(Files.readAllBytes(file), StandardCharsets.UTF_8);
-    }
-
-    static void writeText(Path file, String text) throws IOException {
-        Files.write(file, text.getBytes(StandardCharsets.UTF_8));
     }
 
     static void deleteTree(Path path) throws IOException {

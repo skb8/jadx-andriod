@@ -12,12 +12,10 @@ import android.provider.MediaStore;
 import androidx.test.ext.junit.runners.AndroidJUnit4;
 import androidx.test.platform.app.InstrumentationRegistry;
 
-import org.junit.Assume;
 import org.junit.Test;
 import org.junit.runner.RunWith;
 
 import java.nio.charset.StandardCharsets;
-import java.nio.file.Files;
 import java.util.List;
 import java.util.Objects;
 import java.util.zip.ZipInputStream;
@@ -84,28 +82,6 @@ public final class JadxSmokeTest {
         } finally {
             context.getContentResolver().delete(input, null, null);
             context.getContentResolver().delete(output, null, null);
-        }
-    }
-
-    @Test
-    public void startsSelectedOpenJdkAndExportsJava() throws Exception {
-        var arguments = InstrumentationRegistry.getArguments();
-        String version = arguments.getString("openjdk");
-        Assume.assumeTrue(version != null);
-        Context context = InstrumentationRegistry.getInstrumentation().getTargetContext();
-        int major = Integer.parseInt(version);
-        var runtime = new OpenJdk(context);
-        var temporary = Files.createTempDirectory(context.getCacheDir().toPath(), "runtime-test-");
-        try {
-            runtime.install(major);
-            assertTrue(runtime.run(major, temporary).startsWith(version + "."));
-            var input = temporary.resolve("Smoke.smali");
-            var output = Files.createDirectory(temporary.resolve("output"));
-            Io.writeText(input, SMALI);
-            assertEquals("0", runtime.run(major, temporary, "-q", "-d", output.toString(), input.toString()));
-            assertTrue(Io.readText(output.resolve("sources/sample/Smoke.java")).contains("return 42"));
-        } finally {
-            Io.deleteTree(temporary);
         }
     }
 

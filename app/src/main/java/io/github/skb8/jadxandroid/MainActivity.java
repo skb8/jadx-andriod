@@ -86,7 +86,6 @@ public final class MainActivity extends Activity {
     private TextView status;
     private ProgressBar progress;
     private PluginStore plugins;
-    private OpenJdk openJdk;
     private Session session;
     private boolean busy;
     private boolean destroyed;
@@ -128,7 +127,6 @@ public final class MainActivity extends Activity {
         } catch (IOException e) {
             throw new IllegalStateException("Хранилище плагинов недоступно", e);
         }
-        openJdk = new OpenJdk(this);
         root = column();
         root.setBackgroundColor(BACKGROUND);
         root.setOnApplyWindowInsetsListener((view, insets) -> {
@@ -236,24 +234,14 @@ public final class MainActivity extends Activity {
             options.add(new Entry("Закрыть проект", this::close));
         }
         options.add(new Entry("Плагины", this::pluginMenu));
-        options.add(new Entry("Среда Java", this::javaMenu));
         choose("Меню", options);
     }
 
     private void exportMenu() {
-        List<Entry> formats = new ArrayList<>(List.of(
+        choose("Экспорт проекта", List.of(
                 new Entry("Java и ресурсы (ZIP)", () -> exportAs("java")),
                 new Entry("JSON и ресурсы (ZIP)", () -> exportAs("json")),
                 new Entry("Проект Gradle (ZIP)", () -> exportAs("gradle"))));
-        int version = selectedJava();
-        if (version != 0 && openJdk.supported() && openJdk.installed(version)) {
-            formats.add(new Entry("Java и ресурсы через OpenJDK " + version + " (ZIP)",
-                    () -> new AlertDialog.Builder(this).setTitle("Экспорт через OpenJDK " + version)
-                            .setMessage("JADX CLI использует исходные файлы и настройки декомпиляции проекта. Для псевдонимов, комментариев и DEX-плагинов используйте обычный экспорт.")
-                            .setNegativeButton("Отмена", null)
-                            .setPositiveButton("Экспорт", (dialog, which) -> exportAs("openjdk-" + version)).show()));
-        }
-        choose("Экспорт проекта", formats);
     }
 
     private void exportAs(String type) {
@@ -332,13 +320,9 @@ public final class MainActivity extends Activity {
             String type = pendingExportMode;
             Session selected = session;
             task("Экспорт проекта…", () -> {
-                if (type.startsWith("openjdk-")) {
-                    int version = Integer.parseInt(type.substring("openjdk-".length()));
-                    return selected.exportOpenJdk(uri, openJdk, version);
-                }
                 selected.export(uri, "gradle".equals(type), "json".equals(type));
-                return false;
-            }, errors -> toast(errors ? "Архив сохранён с ошибками декомпиляции" : "Архив сохранён"));
+                return null;
+            }, unused -> toast("Архив сохранён"));
         } else if (request == INSTALL_PLUGIN) {
             task("Импорт плагина…", () -> {
                 try (var input = Session.open(this, uri)) {
@@ -471,58 +455,6 @@ public final class MainActivity extends Activity {
                 + "\nПредупреждения JADX: " + selected.jadx.getWarnsCount(),
                 result -> new AlertDialog.Builder(this).setTitle("Диагностика").setMessage(result)
                         .setPositiveButton("Закрыть", null).show());
-    }
-
-    private int selectedJava() {
-        return getPreferences(MODE_PRIVATE).getInt("openJdkVersion", 0);
-    }
-
-    private void javaMenu() {
-        int selected = selectedJava();
-        List<Entry> runtimes = new ArrayList<>();
-        runtimes.add(new Entry("Android ART" + (selected == 0 ? " · выбрано" : ""), () -> {
-            getPreferences(MODE_PRIVATE).edit().remove("openJdkVersion").apply();
-            toast("Выбрана Android ART");
-        }));
-        if (openJdk.supported()) {
-            for (int version : new int[]{17, 21}) {
-                boolean installed = openJdk.installed(version);
-                String label = "OpenJDK " + version
-                        + (selected == version ? " · выбрано" : installed ? " · установлено" : " · скачать");
-                runtimes.add(new Entry(label, () -> {
-                    if (installed) {
-                        activateJava(version);
-                    } else {
-                        new AlertDialog.Builder(this).setTitle("Скачать OpenJDK " + version + "?")
-                                .setMessage("При первой установке приложение скачает среду и JADX CLI с GitHub. Объём загрузки около 100 МБ.")
-                                .setNegativeButton("Отмена", null)
-                                .setPositiveButton("Скачать", (dialog, which) -> activateJava(version)).show();
-                    }
-                }));
-            }
-        }
-        if (!openJdk.supported()) {
-            runtimes.add(new Entry("Совместимость OpenJDK", () -> new AlertDialog.Builder(this)
-                    .setTitle("OpenJDK 17 и 21")
-                    .setMessage("Эти сборки OpenJDK требуют размер страницы памяти 4 КБ.")
-                    .setPositiveButton("Закрыть", null).show()));
-        }
-        choose("Java для экспорта", runtimes);
-    }
-
-    private void activateJava(int version) {
-        task("Установка и запуск OpenJDK " + version + "…", () -> {
-            openJdk.install(version);
-            var temporary = java.nio.file.Files.createTempDirectory(getCacheDir().toPath(), "jdk-check-");
-            try {
-                return openJdk.run(version, temporary);
-            } finally {
-                Io.deleteTree(temporary);
-            }
-        }, runtime -> {
-            getPreferences(MODE_PRIVATE).edit().putInt("openJdkVersion", version).apply();
-            toast("Выбрана OpenJDK " + runtime);
-        });
     }
 
     private void pluginMenu() {

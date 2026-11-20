@@ -323,45 +323,13 @@ final class Session implements AutoCloseable {
                 args.setExportAsGradleProject(false);
                 args.setOutputFormat(JadxArgs.OutputFormatEnum.JAVA);
             }
-            writeArchive(destination, output, export);
+            Path archive = export.resolve("project.zip");
+            Io.zip(output, archive);
+            try (var stream = Objects.requireNonNull(context.getContentResolver().openOutputStream(destination, "wt"))) {
+                Files.copy(archive, stream);
+            }
         } finally {
             Io.deleteTree(export);
-        }
-    }
-
-    boolean exportOpenJdk(Uri destination, OpenJdk runtime, int version) throws Exception {
-        Path export = Files.createTempDirectory(directory, "jvm-export-");
-        try {
-            Path output = Files.createDirectory(export.resolve("output"));
-            var arguments = new ArrayList<>(List.of("--quiet", "--threads-count", "2", "--output-dir",
-                    output.toString(), "--decompilation-mode", project.mode.name().toLowerCase(java.util.Locale.ROOT)));
-            if (project.deobfuscate) {
-                arguments.add("--deobf");
-            }
-            if (project.inconsistent) {
-                arguments.add("--show-bad-code");
-            }
-            for (var input : jadx.getArgs().getInputFiles()) {
-                arguments.add(input.getAbsolutePath());
-            }
-            String result = runtime.run(version, export, arguments.toArray(String[]::new));
-            try (var files = Files.list(output)) {
-                if (files.findAny().isEmpty()) {
-                    throw new IOException("JADX CLI не записала выходные файлы");
-                }
-            }
-            writeArchive(destination, output, export);
-            return "3".equals(result);
-        } finally {
-            Io.deleteTree(export);
-        }
-    }
-
-    private void writeArchive(Uri destination, Path output, Path export) throws IOException {
-        Path archive = export.resolve("project.zip");
-        Io.zip(output, archive);
-        try (var stream = Objects.requireNonNull(context.getContentResolver().openOutputStream(destination, "wt"))) {
-            Files.copy(archive, stream);
         }
     }
 
