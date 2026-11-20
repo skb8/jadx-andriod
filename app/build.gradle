@@ -15,6 +15,7 @@ android {
         applicationId 'io.github.skb8.jadxandroid'
         minSdk 33
         targetSdk 35
+        testInstrumentationRunner 'androidx.test.runner.AndroidJUnitRunner'
         versionCode 1
         versionName '0.1.0'
         buildConfigField 'String', 'JADX_VERSION', "\"$jadx\""
@@ -40,5 +41,7 @@ dependencies {
     implementation "io.github.skylot:jadx-rename-mappings:$jadx"
     implementation 'org.apache.commons:commons-compress:1.27.1'
     implementation 'org.tukaani:xz:1.10'
+    androidTestImplementation 'androidx.test:runner:1.6.2'
+    androidTestImplementation 'androidx.test.ext:junit:1.2.1'
     implementation 'com.github.tony19:logback-android:3.0.0'
 }

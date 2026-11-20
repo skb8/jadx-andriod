@@ -51,7 +51,7 @@ static std::string execute(const std::string& home, const std::string& jar,
         options.push_back({value.data(), nullptr});
     }
     JavaVMInitArgs vm_args{
-        JNI_VERSION_1_8, static_cast<jint>(options.size()), options.data(), JNI_FALSE
+        JNI_VERSION_1_6, static_cast<jint>(options.size()), options.data(), JNI_FALSE
     };
     JavaVM* vm = nullptr;
     JNIEnv* openjdk = nullptr;

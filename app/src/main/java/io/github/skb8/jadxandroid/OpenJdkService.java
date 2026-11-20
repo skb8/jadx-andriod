@@ -8,7 +8,6 @@ import android.os.IBinder;
 import android.os.Looper;
 import android.os.Message;
 import android.os.Messenger;
-import android.os.RemoteException;
 import android.os.Process;
 
 import java.io.IOException;
@@ -27,12 +26,11 @@ public final class OpenJdkService extends Service {
     }
 
     private boolean run(Message message) {
-        if (started || message.what != 1 || message.replyTo == null) {
+        if (started || message.what != 1) {
             return false;
         }
         started = true;
         Bundle job = message.getData();
-        Messenger reply = message.replyTo;
         Thread worker = new Thread(() -> {
             String result;
             try {
@@ -44,17 +42,8 @@ public final class OpenJdkService extends Service {
             }
             try {
                 Files.writeString(Path.of(job.getString("work"), "openjdk-result"), result);
-            } catch (IOException ignored) {
-                // The binder reply carries the same result.
-            }
-            try {
-                Message response = Message.obtain(null, 2);
-                Bundle data = new Bundle();
-                data.putString("result", result);
-                response.setData(data);
-                reply.send(response);
-            } catch (RemoteException ignored) {
-                // The Android UI was closed during the CLI operation.
+            } catch (IOException error) {
+                android.util.Log.e("JADX", "Could not store OpenJDK result", error);
             } finally {
                 Process.killProcess(Process.myPid());
             }

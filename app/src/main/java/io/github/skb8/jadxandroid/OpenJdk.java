@@ -6,9 +6,7 @@ import android.content.Intent;
 import android.content.ServiceConnection;
 import android.os.Build;
 import android.os.Bundle;
-import android.os.Handler;
 import android.os.IBinder;
-import android.os.Looper;
 import android.os.Message;
 import android.os.Messenger;
 import android.os.RemoteException;
@@ -196,16 +194,14 @@ final class OpenJdk {
         job.putString("jar", cli().toString());
         job.putString("work", work.toString());
         job.putStringArray("args", arguments);
-        Messenger reply = new Messenger(new Handler(Looper.getMainLooper(), message -> {
-            answer.complete(message.getData().getString("result", "OpenJDK не вернула результат"));
-            return true;
-        }));
         ServiceConnection connection = new ServiceConnection() {
             @Override
             public void onServiceConnected(ComponentName name, IBinder service) {
+                if (answer.isDone()) {
+                    return;
+                }
                 Message request = Message.obtain(null, 1);
                 request.setData(job);
-                request.replyTo = reply;
                 try {
                     new Messenger(service).send(request);
                 } catch (RemoteException error) {
